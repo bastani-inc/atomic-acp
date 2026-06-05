@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { TransformStream } from 'node:stream/web'
+import { AgentSideConnection, ClientSideConnection } from '@agentclientprotocol/sdk'
 
 import { AtomicAcpAgent } from '../../src/acp/agent.js'
 import { SessionStore } from '../../src/acp/session-store.js'
@@ -11,7 +13,26 @@ import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 // We mock AtomicRpcProcess.spawn so loadSession doesn't actually spawn `atomic`.
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 
-test('AtomicAcpAgent: unstable_listSessions lists Atomic sessions and loadSession replays history', async () => {
+function createAcpMemoryStreams() {
+  const clientToAgent = new TransformStream<any, any>()
+  const agentToClient = new TransformStream<any, any>()
+
+  return {
+    agentStream: {
+      readable: clientToAgent.readable,
+      writable: agentToClient.writable
+    },
+    clientStream: {
+      readable: agentToClient.readable,
+      writable: clientToAgent.writable
+    },
+    async close() {
+      await Promise.allSettled([clientToAgent.writable.close(), agentToClient.writable.close()])
+    }
+  }
+}
+
+test('AtomicAcpAgent: listSessions lists Atomic sessions and loadSession replays history', async () => {
   // Create a fake ATOMIC_CODING_AGENT_DIR with one session.
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-test-'))
   const sessionsDir = join(root, 'sessions', '--tmp--project--')
@@ -63,7 +84,7 @@ test('AtomicAcpAgent: unstable_listSessions lists Atomic sessions and loadSessio
     const agent = new AtomicAcpAgent(asAgentConn(conn))
 
     // 1) list sessions
-    const listed = await agent.unstable_listSessions({ cwd: null, cursor: null, _meta: null } as any)
+    const listed = await agent.listSessions({ cwd: null, cursor: null, _meta: null } as any)
     assert.ok(listed.sessions.length >= 1)
 
     const s = listed.sessions.find(x => x.sessionId === 'sess-1')
@@ -109,6 +130,75 @@ test('AtomicAcpAgent: unstable_listSessions lists Atomic sessions and loadSessio
       AtomicRpcProcess.spawn = originalSpawn
     }
   } finally {
+    if (oldEnv === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR
+    else process.env.ATOMIC_CODING_AGENT_DIR = oldEnv
+  }
+})
+
+test('AtomicAcpAgent: SDK dispatches session/list to stable listSessions after initialize', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'atomic-acp-test-'))
+  const sessionsDir = join(root, 'sessions', '--tmp--sdk-project--')
+  mkdirSync(sessionsDir, { recursive: true })
+
+  writeFileSync(
+    join(sessionsDir, '0000_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jsonl'),
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'sess-sdk-list',
+        timestamp: '2026-02-12T00:00:00.000Z',
+        cwd: '/tmp/sdk-project'
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'sdk-message-1',
+        parentId: null,
+        timestamp: '2026-02-12T00:00:01.000Z',
+        message: { role: 'user', content: 'Hello through SDK' }
+      }),
+      JSON.stringify({
+        type: 'session_info',
+        id: 'sdk-info-1',
+        parentId: 'sdk-message-1',
+        timestamp: '2026-02-12T00:00:02.000Z',
+        name: 'SDK Listed Session'
+      })
+    ].join('\n') + '\n',
+    { encoding: 'utf8' }
+  )
+
+  const oldEnv = process.env.ATOMIC_CODING_AGENT_DIR
+  process.env.ATOMIC_CODING_AGENT_DIR = root
+  const streams = createAcpMemoryStreams()
+
+  try {
+    const agentConn = new AgentSideConnection(conn => new AtomicAcpAgent(conn), streams.agentStream)
+    void agentConn
+
+    const clientConn = new ClientSideConnection(
+      () =>
+        ({
+          requestPermission: async () => {
+            throw new Error('requestPermission should not be called by session/list')
+          },
+          sessionUpdate: async () => {
+            // no-op
+          }
+        }) as any,
+      streams.clientStream
+    )
+
+    const initialized = await clientConn.initialize({ protocolVersion: 1 } as any)
+    assert.deepEqual((initialized as any).agentCapabilities?.sessionCapabilities?.list, {})
+
+    const listed = await clientConn.listSessions({ cwd: null, cursor: null, _meta: null } as any)
+    const s = listed.sessions.find(x => x.sessionId === 'sess-sdk-list')
+    assert.ok(s)
+    assert.equal(s?.cwd, '/tmp/sdk-project')
+    assert.equal(s?.title, 'SDK Listed Session')
+  } finally {
+    await streams.close()
     if (oldEnv === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR
     else process.env.ATOMIC_CODING_AGENT_DIR = oldEnv
   }

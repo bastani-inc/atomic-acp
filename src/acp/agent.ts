@@ -37,6 +37,15 @@ import {
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './atomic-settings.js'
 import { toAvailableCommandsFromAtomicGetCommands } from './atomic-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
+import {
+  NO_CLIENT_ELICITATION_SUPPORT,
+  readClientElicitationSupport,
+  type ClientElicitationSupport
+} from './elicitation/atomic-questionnaire.js'
+import {
+  detectAtomicQuestionnaireRpcSupport,
+  type AtomicQuestionnaireRpcSupport
+} from './elicitation/atomic-questionnaire-support.js'
 import { isAbsolute } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
@@ -108,6 +117,7 @@ export class AtomicAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
+  private clientElicitationSupport: ClientElicitationSupport = NO_CLIENT_ELICITATION_SUPPORT
 
   dispose(): void {
     this.sessions.disposeAll()
@@ -141,6 +151,8 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+    this.clientElicitationSupport = readClientElicitationSupport(params)
+
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1
     const requested = params.protocolVersion
@@ -183,6 +195,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
+    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport()
 
     // Atomic doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
@@ -190,7 +203,9 @@ export class AtomicAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
+      atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
+      clientElicitationSupport: this.clientElicitationSupport,
+      atomicQuestionnaireRpcSupport
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -812,7 +827,15 @@ export class AtomicAcpAgent implements ACPAgent {
     await session.cancel()
   }
 
+  async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    return this.listSessionsImpl(params)
+  }
+
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    return this.listSessionsImpl(params)
+  }
+
+  private async listSessionsImpl(params: ListSessionsRequest): Promise<ListSessionsResponse> {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
     // emulate Atomic's `/resume` picker (project-scoped).
@@ -881,6 +904,13 @@ export class AtomicAcpAgent implements ACPAgent {
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     let atomicCommands: any = null
     let atomicCommandsErr: unknown = null
+    let state: any = null
+
+    try {
+      state = (await proc.getState()) as any
+    } catch {
+      state = null
+    }
 
     try {
       if (typeof proc.getCommands === 'function') atomicCommands = (await proc.getCommands()) as any
@@ -888,12 +918,16 @@ export class AtomicAcpAgent implements ACPAgent {
       atomicCommandsErr = err
     }
 
+    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport(state)
+
     const session = this.sessions.getOrCreate(params.sessionId, {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
       conn: this.conn,
       proc,
-      fileCommands: atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands
+      fileCommands: atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands,
+      clientElicitationSupport: this.clientElicitationSupport,
+      atomicQuestionnaireRpcSupport
     })
 
     // Policy: within a single ACP connection (one Zed window), keep only one live Atomic subprocess.
@@ -973,8 +1007,8 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const models = await getModelState(proc)
-    const thinking = await getThinkingState(proc)
+    const models = await getModelState(proc, { state })
+    const thinking = await getThinkingState(proc, { state })
 
     const response = {
       models,
@@ -1234,6 +1268,17 @@ function getAtomicVersionOutput(): string {
     shell: shouldUseShellForAtomicCommand(cmd)
   })
   return String(atomicVersion.stdout ?? '').trim() || String(atomicVersion.stderr ?? '').trim()
+}
+
+function detectInstalledAtomicQuestionnaireRpcSupport(rpcCapabilities?: unknown): AtomicQuestionnaireRpcSupport {
+  let versionOutput: string | null = null
+  try {
+    versionOutput = getAtomicVersionOutput()
+  } catch {
+    versionOutput = null
+  }
+
+  return detectAtomicQuestionnaireRpcSupport({ versionOutput, rpcCapabilities: rpcCapabilities ?? undefined })
 }
 
 function buildUpdateNotice(): string | null {

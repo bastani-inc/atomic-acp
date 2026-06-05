@@ -1,13 +1,22 @@
-import type { AgentSideConnection } from '@agentclientprotocol/sdk'
-import type { AtomicRpcEvent } from '../../src/atomic-rpc/process.js'
+import type { AgentSideConnection, CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
+import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../src/atomic-rpc/process.js'
 
 type SessionUpdateMsg = Parameters<AgentSideConnection['sessionUpdate']>[0]
 
 export class FakeAgentSideConnection {
   readonly updates: SessionUpdateMsg[] = []
+  readonly elicitationRequests: CreateElicitationRequest[] = []
+  elicitationResponses: Array<CreateElicitationResponse | Promise<CreateElicitationResponse>> = []
 
   async sessionUpdate(msg: SessionUpdateMsg): Promise<void> {
     this.updates.push(msg)
+  }
+
+  async unstable_createElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
+    this.elicitationRequests.push(params)
+    const response = this.elicitationResponses.shift()
+    if (!response) return { action: 'cancel' }
+    return response
   }
 }
 
@@ -17,7 +26,9 @@ export class FakeAtomicRpcProcess {
 
   // spies
   readonly prompts: Array<{ message: string; attachments: unknown[] }> = []
+  readonly extensionUiResponses: AtomicExtensionUiResponse[] = []
   promptError: unknown = null
+  promptPromise: Promise<void> | null = null
   abortCount = 0
 
   onEvent(handler: (ev: AtomicRpcEvent) => void): () => void {
@@ -44,11 +55,16 @@ export class FakeAtomicRpcProcess {
 
   async prompt(message: string, attachments: unknown[] = []): Promise<void> {
     this.prompts.push({ message, attachments })
+    if (this.promptPromise) await this.promptPromise
     if (this.promptError) throw this.promptError
   }
 
   async abort(): Promise<void> {
     this.abortCount += 1
+  }
+
+  async writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {
+    this.extensionUiResponses.push(response)
   }
 
   async getState(): Promise<any> {

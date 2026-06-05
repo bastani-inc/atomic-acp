@@ -11,10 +11,30 @@ import { RequestError } from '@agentclientprotocol/sdk'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
-import { AtomicRpcProcess, AtomicRpcSpawnError, type AtomicRpcEvent } from '../atomic-rpc/process.js'
+import {
+  AtomicRpcProcess,
+  AtomicRpcSpawnError,
+  type AtomicExtensionUiResponse,
+  type AtomicRpcEvent
+} from '../atomic-rpc/process.js'
 import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/atomic-tools.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
+import {
+  cancelledAtomicQuestionnaireResult,
+  createAtomicQuestionElicitation,
+  isAtomicAskUserQuestionEvent,
+  NO_CLIENT_ELICITATION_SUPPORT,
+  normalizeAtomicQuestionnairePayload,
+  type AtomicAskUserQuestionEvent,
+  type AtomicQuestionnaireResult,
+  type ClientElicitationSupport
+} from './elicitation/atomic-questionnaire.js'
+import {
+  detectAtomicQuestionnaireRpcSupport,
+  NO_ATOMIC_QUESTIONNAIRE_RPC_SUPPORT,
+  type AtomicQuestionnaireRpcSupport
+} from './elicitation/atomic-questionnaire-support.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -22,6 +42,8 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   atomicCommand?: string
+  clientElicitationSupport?: ClientElicitationSupport
+  atomicQuestionnaireRpcSupport?: AtomicQuestionnaireRpcSupport
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -36,6 +58,27 @@ type QueuedTurn = {
   images: unknown[]
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
+}
+
+type PendingAtomicQuestion = {
+  atomicRequestId: string
+}
+
+type TurnTerminalReason = 'agent_end' | 'prompt_failure' | 'process_exit'
+
+function resolveSessionAtomicQuestionnaireRpcSupport(
+  base: AtomicQuestionnaireRpcSupport | undefined,
+  rpcCapabilities: unknown
+): AtomicQuestionnaireRpcSupport {
+  if (base?.supported && base.source === 'atomic_rpc_capability') return base
+
+  const detected = detectAtomicQuestionnaireRpcSupport({
+    atomicVersion: base?.atomicVersion,
+    rpcCapabilities: rpcCapabilities ?? undefined
+  })
+
+  if (detected.supported) return detected
+  return base ?? detected
 }
 
 function findUniqueLineNumber(text: string, needle: string): number | undefined {
@@ -138,7 +181,12 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      clientElicitationSupport: params.clientElicitationSupport,
+      atomicQuestionnaireRpcSupport: resolveSessionAtomicQuestionnaireRpcSupport(
+        params.atomicQuestionnaireRpcSupport,
+        state
+      )
     })
 
     this.sessions.set(sessionId, session)
@@ -165,7 +213,9 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      clientElicitationSupport: params.clientElicitationSupport,
+      atomicQuestionnaireRpcSupport: params.atomicQuestionnaireRpcSupport
     })
 
     this.sessions.set(sessionId, session)
@@ -183,7 +233,13 @@ export class AtomicAcpSession {
 
   readonly proc: AtomicRpcProcess
   private readonly conn: AgentSideConnection
+  private readonly clientElicitationSupport: ClientElicitationSupport
+  private readonly atomicQuestionnaireRpcSupport: AtomicQuestionnaireRpcSupport
   private fileCommands: FileSlashCommand[]
+
+  private pendingAtomicQuestion: PendingAtomicQuestion | null = null
+  private unsupportedAtomicQuestionMessageSent = false
+  private activeTurnTerminalReason: TurnTerminalReason | null = null
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -217,12 +273,16 @@ export class AtomicAcpSession {
     proc: AtomicRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    clientElicitationSupport?: ClientElicitationSupport
+    atomicQuestionnaireRpcSupport?: AtomicQuestionnaireRpcSupport
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
     this.mcpServers = opts.mcpServers
     this.proc = opts.proc
     this.conn = opts.conn
+    this.clientElicitationSupport = opts.clientElicitationSupport ?? NO_CLIENT_ELICITATION_SUPPORT
+    this.atomicQuestionnaireRpcSupport = opts.atomicQuestionnaireRpcSupport ?? NO_ATOMIC_QUESTIONNAIRE_RPC_SUPPORT
     this.fileCommands = opts.fileCommands ?? []
 
     this.proc.onEvent(ev => this.handleAtomicEvent(ev))
@@ -317,6 +377,8 @@ export class AtomicAcpSession {
       })
     }
 
+    await this.cancelPendingAtomicQuestion()
+
     // Abort the currently running turn (if any). If nothing is running, this is a no-op.
     await this.proc.abort()
   }
@@ -340,12 +402,20 @@ export class AtomicAcpSession {
       })
   }
 
+  private emitAgentText(text: string): void {
+    this.emit({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text }
+    })
+  }
+
   private async flushEmits(): Promise<void> {
     await this.lastEmit
   }
 
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
+    this.activeTurnTerminalReason = null
     this.inAgentLoop = false
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
@@ -366,6 +436,9 @@ export class AtomicAcpSession {
   }
 
   private async finishActiveAndQueuedFromFailure(err: unknown): Promise<void> {
+    this.activeTurnTerminalReason ??= 'prompt_failure'
+    await this.cancelPendingAtomicQuestion()
+
     await this.flushEmits()
     if (!this.pendingTurn && this.turnQueue.length === 0) return
 
@@ -392,11 +465,148 @@ export class AtomicAcpSession {
   }
 
   private handleAtomicExit(err: Error): void {
+    this.activeTurnTerminalReason ??= 'process_exit'
+    void this.cancelPendingAtomicQuestion()
+
     if (!this.pendingTurn && this.turnQueue.length === 0) return
     void this.finishActiveAndQueuedFromFailure(err)
   }
 
+  private shouldCancelIncomingAtomicQuestion(): boolean {
+    return (
+      !this.pendingTurn ||
+      this.cancelRequested ||
+      this.activeTurnTerminalReason !== null ||
+      this.pendingAtomicQuestion !== null
+    )
+  }
+
+  private async handleAtomicAskUserQuestionEvent(ev: AtomicAskUserQuestionEvent): Promise<void> {
+    if (!this.atomicQuestionnaireRpcSupport.supported) {
+      this.emitUnsupportedAtomicQuestionnaireMessageOnce()
+      await this.writeUnsupportedAtomicQuestionnaireCancellation(ev.id)
+      return
+    }
+
+    if (this.shouldCancelIncomingAtomicQuestion()) {
+      await this.writeAtomicQuestionnaireResponse(ev.id, cancelledAtomicQuestionnaireResult())
+      return
+    }
+
+    const normalized = normalizeAtomicQuestionnairePayload(ev.questions)
+    if (!normalized.ok) {
+      this.emitAgentText(`Atomic could not present a structured question: ${normalized.message}`)
+      await this.writeAtomicQuestionnaireResponse(ev.id, normalized.result)
+      return
+    }
+
+    if (!this.clientElicitationSupport.form) {
+      this.emitAgentText(
+        'Atomic asked a structured question, but this ACP client does not advertise form elicitation. Continuing without an answer.'
+      )
+      await this.writeAtomicQuestionnaireResponse(ev.id, cancelledAtomicQuestionnaireResult('no_ui'))
+      return
+    }
+
+    const pending: PendingAtomicQuestion = {
+      atomicRequestId: ev.id
+    }
+    this.pendingAtomicQuestion = pending
+
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      _meta: { atomicAcp: { askUserQuestionPending: true, questionCount: normalized.questions.length } }
+    })
+
+    const questionnaireResponse = await createAtomicQuestionElicitation({
+      conn: this.conn,
+      sessionId: this.sessionId,
+      atomicRequestId: ev.id,
+      questions: normalized.questions
+    })
+
+    if (questionnaireResponse.invalidAcceptContent) {
+      this.emitAgentText(
+        'Atomic received an invalid structured question answer from the client. Continuing without an answer.'
+      )
+    }
+
+    await this.finishPendingAtomicQuestion(pending, questionnaireResponse.result)
+  }
+
+  private emitUnsupportedAtomicQuestionnaireMessageOnce(): void {
+    if (this.unsupportedAtomicQuestionMessageSent) return
+    this.unsupportedAtomicQuestionMessageSent = true
+
+    const version = this.atomicQuestionnaireRpcSupport.atomicVersion
+    const subject = version ? `Atomic v${version}` : 'This Atomic version'
+    const minimum = this.atomicQuestionnaireRpcSupport.minimumVersion
+      ? ` Atomic questionnaire RPC is only enabled for Atomic v${this.atomicQuestionnaireRpcSupport.minimumVersion}+ or an explicit RPC capability.`
+      : ''
+
+    this.emitAgentText(
+      `${subject} does not support ask_user_question questionnaire RPC over Atomic RPC.${minimum} Continuing without an answer.`
+    )
+  }
+
+  private async writeUnsupportedAtomicQuestionnaireCancellation(atomicRequestId: string): Promise<void> {
+    await this.writeExtensionUiResponse({
+      type: 'extension_ui_response',
+      id: atomicRequestId,
+      cancelled: true
+    })
+  }
+
+  private async cancelPendingAtomicQuestion(): Promise<void> {
+    const pendingQuestion = this.pendingAtomicQuestion
+    if (!pendingQuestion) return
+
+    await this.finishPendingAtomicQuestion(pendingQuestion, cancelledAtomicQuestionnaireResult())
+  }
+
+  private async finishPendingAtomicQuestion(
+    pending: PendingAtomicQuestion,
+    result: AtomicQuestionnaireResult
+  ): Promise<void> {
+    if (this.pendingAtomicQuestion !== pending) return
+
+    this.pendingAtomicQuestion = null
+
+    await this.writeAtomicQuestionnaireResponse(pending.atomicRequestId, result)
+
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      _meta: { atomicAcp: { askUserQuestionPending: false } }
+    })
+  }
+
+  private async writeAtomicQuestionnaireResponse(
+    atomicRequestId: string,
+    questionnaireResult: AtomicQuestionnaireResult
+  ): Promise<void> {
+    await this.writeExtensionUiResponse({
+      type: 'extension_ui_response',
+      id: atomicRequestId,
+      questionnaireResult
+    })
+  }
+
+  private async writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {
+    try {
+      await this.proc.writeExtensionUiResponse(response)
+    } catch {
+      this.emitAgentText('Atomic could not receive a structured question response.')
+    }
+  }
+
   private handleAtomicEvent(ev: AtomicRpcEvent) {
+    if (isAtomicAskUserQuestionEvent(ev)) {
+      void this.handleAtomicAskUserQuestionEvent(ev).catch(() => {
+        // Keep Atomic event handling best-effort; never expose answer content in diagnostics.
+      })
+      return
+    }
+
     const type = String((ev as any).type ?? '')
 
     switch (type) {
@@ -487,6 +697,10 @@ export class AtomicAcpSession {
         const toolName = String((ev as any).toolName ?? 'tool')
         const args = (ev as any).args
         let line: number | undefined
+
+        if (toolName === 'ask_user_question' && !this.atomicQuestionnaireRpcSupport.supported) {
+          this.emitUnsupportedAtomicQuestionnaireMessageOnce()
+        }
 
         // Capture pre-edit file contents so we can emit a structured ACP diff on completion.
         if (toolName === 'edit') {
@@ -653,9 +867,17 @@ export class AtomicAcpSession {
       }
 
       case 'agent_end': {
-        // Ensure all updates derived from Atomic events are delivered before we resolve
-        // the ACP `session/prompt` request.
-        void this.flushEmits().finally(() => {
+        this.activeTurnTerminalReason = 'agent_end'
+
+        // Cancel any pending Atomic questionnaire before resolving the ACP prompt.
+        // Late ACP elicitation responses will then fail the pending-object identity guard.
+        void (async () => {
+          await this.cancelPendingAtomicQuestion()
+
+          // Ensure all updates derived from Atomic events are delivered before we resolve
+          // the ACP `session/prompt` request.
+          await this.flushEmits()
+
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null
@@ -675,7 +897,7 @@ export class AtomicAcpSession {
               _meta: { atomicAcp: { queueDepth: 0, running: false } }
             })
           }
-        })
+        })()
         break
       }
 

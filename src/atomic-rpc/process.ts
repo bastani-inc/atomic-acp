@@ -66,6 +66,18 @@ type AtomicRpcResponse = {
   error?: string
 }
 
+export type AtomicExtensionUiResponse =
+  | {
+      type: 'extension_ui_response'
+      id: string
+      questionnaireResult: unknown
+    }
+  | {
+      type: 'extension_ui_response'
+      id: string
+      cancelled: true
+    }
+
 export type AtomicRpcEvent = Record<string, unknown>
 
 type SpawnParams = {
@@ -264,6 +276,10 @@ export class AtomicRpcProcess {
     if (!res.success) throw new Error(`Atomic abort failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
+  writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {
+    return this.writeJsonLine(response)
+  }
+
   async getState(): Promise<unknown> {
     const res = await this.request({ type: 'get_state' })
     if (!res.success) throw new Error(`Atomic get_state failed: ${res.error ?? JSON.stringify(res.data)}`)
@@ -343,26 +359,32 @@ export class AtomicRpcProcess {
     return res.data
   }
 
+  private writeJsonLine(value: unknown): Promise<void> {
+    const line = JSON.stringify(value) + '\n'
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        this.child.stdin.write(line, err => {
+          if (err) reject(err)
+          else resolve()
+        })
+      } catch (e) {
+        reject(e)
+      }
+    })
+  }
+
   private request(cmd: AtomicRpcCommand): Promise<AtomicRpcResponse> {
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
 
-    const line = JSON.stringify(withId) + '\n'
-
     return new Promise<AtomicRpcResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
 
-      try {
-        this.child.stdin.write(line, err => {
-          if (err) {
-            this.pending.delete(id)
-            reject(err)
-          }
-        })
-      } catch (e) {
+      this.writeJsonLine(withId).catch(err => {
         this.pending.delete(id)
-        reject(e)
-      }
+        reject(err)
+      })
     })
   }
 }
