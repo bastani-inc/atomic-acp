@@ -1,0 +1,12 @@
+node_modules
+.dist
+.dist-cache
+dist
+*.log
+.atomic/todos/
+
+# ESLint cache
+.eslintcache
+
+/agentDocs
+.DS_Store
