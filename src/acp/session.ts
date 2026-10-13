@@ -1,3 +1,4 @@
+import { requestExtensionDialog } from './elicitation/extension-dialog.js'
 import type {
   AgentSideConnection,
   ContentBlock,
@@ -21,6 +22,17 @@ import {
 } from '../atomic-rpc/process.js'
 import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/atomic-tools.js'
+import {
+  bashCommand,
+  bashExitCode,
+  bashOutputDelta,
+  bashResultText,
+  bashTerminalContent,
+  bashTerminalExitMeta,
+  bashTerminalInfoMeta,
+  bashTerminalOutputMeta,
+  isBashTool
+} from './translate/bash.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   cancelledAtomicQuestionnaireResult,
@@ -108,15 +120,21 @@ function findUniqueLineNumber(text: string, needle: string): number | undefined 
   return line
 }
 
-function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
-  const path =
-    typeof (args as { path?: unknown } | null | undefined)?.path === 'string'
-      ? (args as { path: string }).path
-      : undefined
-  if (!path) return undefined
+function getMutationPaths(args: unknown): string[] {
+  const record = args as { path?: unknown; file_path?: unknown; input?: unknown } | null
+  const path = record?.path ?? record?.file_path
+  if (typeof path === 'string') return [path]
+  if (typeof record?.input !== 'string') return []
+  return [...record.input.matchAll(/^\[(.+)#[0-9a-fA-F]{4}\]\s*$/gm)].map(match => match[1]!)
+}
 
-  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path)
-  return [{ path: resolvedPath, ...(typeof line === 'number' ? { line } : {}) }]
+function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
+  const paths = getMutationPaths(args)
+  if (!paths.length) return undefined
+  return paths.map(path => ({
+    path: isAbsolute(path) ? path : resolvePath(cwd, path),
+    ...(typeof line === 'number' ? { line } : {})
+  }))
 }
 
 export class SessionManager {
@@ -271,15 +289,16 @@ export class AtomicAcpSession {
   // Retries and queued continuations may emit multiple agent_end events before settlement.
   private inAgentLoop = false
 
-  // For ACP diff support: capture file contents before edits, then emit ToolCallContent {type:"diff"}.
-  // This is due to Atomic sending diff as a string as opposed to ACP expected diff format.
-  // Compatible format may need to be implemented in Atomic in the future.
-  private editSnapshots = new Map<string, { path: string; oldText: string }>()
+  private fileSnapshots = new Map<string, Array<{ path: string; oldText: string | null }>>()
+  private fileMutationToolCallIds = new Set<string>()
+  private bashToolCallIds = new Set<string>()
+  private bashOutputSnapshots = new Map<string, string>()
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  private pendingExtensionDialogs = new Map<string, () => Promise<void>>()
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -485,6 +504,40 @@ export class AtomicAcpSession {
     await this.flushEmits()
   }
 
+  private emitBashToolCall(id: string, name: string, args: unknown, status: 'pending' | 'in_progress'): void {
+    const exists = this.currentToolCalls.has(id)
+    this.currentToolCalls.set(id, status)
+    this.bashToolCallIds.add(id)
+    this.emit({
+      sessionUpdate: exists ? 'tool_call_update' : 'tool_call',
+      toolCallId: id,
+      title: bashCommand(args) ?? name,
+      kind: 'execute',
+      status,
+      ...(!exists ? { content: bashTerminalContent(id), _meta: bashTerminalInfoMeta(id, this.cwd) } : {})
+    })
+  }
+
+  private emitBashOutput(
+    id: string,
+    result: unknown,
+    status: 'in_progress' | 'completed' | 'failed',
+    isError = false
+  ): void {
+    const text = bashResultText(result)
+    const delta = bashOutputDelta(this.bashOutputSnapshots.get(id) ?? '', text)
+    this.bashOutputSnapshots.set(id, text)
+    this.emit({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: id,
+      status,
+      _meta: {
+        ...(delta ? bashTerminalOutputMeta(id, delta) : {}),
+        ...(status !== 'in_progress' ? bashTerminalExitMeta(id, bashExitCode(result, isError)) : {})
+      }
+    })
+  }
+
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.activeTurnTerminalReason = null
@@ -630,6 +683,7 @@ export class AtomicAcpSession {
   }
 
   private async cancelPendingAtomicQuestion(): Promise<void> {
+    await Promise.all([...this.pendingExtensionDialogs.values()].map(cancel => cancel()))
     const pendingQuestion = this.pendingAtomicQuestion
     if (!pendingQuestion) return
 
@@ -671,6 +725,43 @@ export class AtomicAcpSession {
     }
   }
 
+  private async handleExtensionUiRequest(ev: AtomicRpcEvent): Promise<void> {
+    const id = typeof ev.id === 'string' ? ev.id : null
+    if (!id) return
+    const method = ev.method
+    if (method === 'notify') {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: typeof ev.message === 'string' ? ev.message : 'Atomic notification' },
+        _meta: { atomicAcp: { notify: { level: typeof ev.notifyType === 'string' ? ev.notifyType : 'info' } } }
+      })
+      return
+    }
+    if (!['select', 'confirm', 'input', 'editor'].includes(String(method))) return
+    if (!this.clientElicitationSupport.form && (method === 'input' || method === 'editor')) {
+      this.emitAgentText(`Atomic ${method} UI request is not supported in ACP yet; cancelling it.`)
+    }
+    if (this.cancelRequested || this.activeTurnTerminalReason !== null) {
+      await this.writeExtensionUiResponse({ type: 'extension_ui_response', id, cancelled: true })
+      return
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = async (response: AtomicExtensionUiResponse) => {
+      if (this.pendingExtensionDialogs.get(id) !== cancel) return
+      this.pendingExtensionDialogs.delete(id)
+      if (timer) clearTimeout(timer)
+      await this.writeExtensionUiResponse(response)
+    }
+    const cancel = () => finish({ type: 'extension_ui_response', id, cancelled: true })
+    this.pendingExtensionDialogs.set(id, cancel)
+    if (typeof ev.timeout === 'number' && Number.isFinite(ev.timeout) && ev.timeout >= 0) {
+      timer = setTimeout(() => {
+        void cancel()
+      }, ev.timeout)
+    }
+    await finish(await requestExtensionDialog(this.conn, this.sessionId, ev, this.clientElicitationSupport.form))
+  }
+
   private handleAtomicEvent(ev: AtomicRpcEvent) {
     if (isAtomicAskUserQuestionEvent(ev)) {
       void this.handleAtomicAskUserQuestionEvent(ev).catch(() => {
@@ -688,6 +779,10 @@ export class AtomicAcpSession {
         break
       }
 
+      case 'extension_ui_request': {
+        void this.handleExtensionUiRequest(ev)
+        break
+      }
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
@@ -739,7 +834,9 @@ export class AtomicAcpSession {
             // IMPORTANT: never downgrade status (e.g. if we already marked in_progress via tool_execution_start).
             const status = existingStatus ?? 'pending'
 
-            if (!existingStatus) {
+            if (isBashTool(toolName)) {
+              this.emitBashToolCall(toolCallId, toolName, rawInput, status)
+            } else if (!existingStatus) {
               this.currentToolCalls.set(toolCallId, 'pending')
               this.emit({
                 sessionUpdate: 'tool_call',
@@ -780,21 +877,26 @@ export class AtomicAcpSession {
           this.emitUnsupportedAtomicQuestionnaireMessageOnce()
         }
 
-        // Capture pre-edit file contents so we can emit a structured ACP diff on completion.
-        if (toolName === 'edit') {
-          const p = typeof args?.path === 'string' ? args.path : undefined
-          if (p) {
-            try {
-              const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p)
-              const oldText = readFileSync(abs, 'utf8')
-              this.editSnapshots.set(toolCallId, { path: p, oldText })
+        if (isBashTool(toolName)) {
+          this.emitBashToolCall(toolCallId, toolName, args, 'in_progress')
+          break
+        }
 
-              const needle = typeof args?.oldText === 'string' ? args.oldText : ''
-              line = findUniqueLineNumber(oldText, needle)
-            } catch {
-              // Ignore snapshot failures; we'll fall back to plain text output.
-            }
-          }
+        if (toolName === 'edit' || toolName === 'write') {
+          this.fileMutationToolCallIds.add(toolCallId)
+          const snapshots = getMutationPaths(args)
+            .map(path => {
+              try {
+                const oldText = readFileSync(resolvePath(this.cwd, path), 'utf8')
+                if (typeof args?.oldText === 'string') line = findUniqueLineNumber(oldText, args.oldText)
+                return { path, oldText }
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { path, oldText: null }
+                return null
+              }
+            })
+            .filter((snapshot): snapshot is { path: string; oldText: string | null } => snapshot !== null)
+          this.fileSnapshots.set(toolCallId, snapshots)
         }
 
         const locations = toToolCallLocations(args, this.cwd, line)
@@ -830,7 +932,11 @@ export class AtomicAcpSession {
         if (!toolCallId) break
 
         const partial = (ev as any).partialResult
-        const text = toolResultToText(partial)
+        if (this.bashToolCallIds.has(toolCallId)) {
+          this.emitBashOutput(toolCallId, partial, 'in_progress')
+          break
+        }
+        const text = this.fileMutationToolCallIds.has(toolCallId) ? '' : toolResultToText(partial)
 
         this.emit({
           sessionUpdate: 'tool_call_update',
@@ -839,7 +945,7 @@ export class AtomicAcpSession {
           content: text
             ? ([{ type: 'content', content: { type: 'text', text } }] satisfies ToolCallContent[])
             : undefined,
-          rawOutput: partial
+          ...(this.fileMutationToolCallIds.has(toolCallId) ? {} : { rawOutput: partial })
         })
         break
       }
@@ -850,32 +956,32 @@ export class AtomicAcpSession {
 
         const result = (ev as any).result
         const isError = Boolean((ev as any).isError)
+        if (this.bashToolCallIds.has(toolCallId)) {
+          this.emitBashOutput(toolCallId, result, isError ? 'failed' : 'completed', isError)
+          this.currentToolCalls.delete(toolCallId)
+          this.bashToolCallIds.delete(toolCallId)
+          this.bashOutputSnapshots.delete(toolCallId)
+          break
+        }
         const text = toolResultToText(result)
 
-        // If this was an edit and we captured a snapshot, emit a structured ACP diff.
-        // This enables clients like Zed to render an actual diff UI.
-        const snapshot = this.editSnapshots.get(toolCallId)
+        const snapshots = this.fileSnapshots.get(toolCallId) ?? []
         let content: ToolCallContent[] | undefined
-
-        if (!isError && snapshot) {
-          try {
-            const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path)
-            const newText = readFileSync(abs, 'utf8')
-            if (newText !== snapshot.oldText) {
-              content = [
-                {
-                  type: 'diff',
-                  path: snapshot.path,
-                  oldText: snapshot.oldText,
-                  newText
-                },
-                ...(text ? ([{ type: 'content', content: { type: 'text', text } }] as ToolCallContent[]) : [])
-              ]
+        if (!isError) {
+          for (const snapshot of snapshots) {
+            try {
+              const path = resolvePath(this.cwd, snapshot.path)
+              const newText = readFileSync(path, 'utf8')
+              if (newText !== snapshot.oldText) {
+                content ??= []
+                content.push({ type: 'diff', path, oldText: snapshot.oldText, newText })
+              }
+            } catch {
+              // Fall back to the tool's text when the file cannot be read.
             }
-          } catch {
-            // ignore; fall back to text only
           }
         }
+        const hasStructuredDiff = Boolean(content?.length)
 
         // Fallback: just text content.
         if (!content && text) {
@@ -887,11 +993,12 @@ export class AtomicAcpSession {
           toolCallId,
           status: isError ? 'failed' : 'completed',
           content,
-          rawOutput: result
+          ...(hasStructuredDiff ? {} : { rawOutput: result })
         })
 
         this.currentToolCalls.delete(toolCallId)
-        this.editSnapshots.delete(toolCallId)
+        this.fileSnapshots.delete(toolCallId)
+        this.fileMutationToolCallIds.delete(toolCallId)
         break
       }
 
@@ -1013,10 +1120,7 @@ function toToolKind(toolName: string): ToolKind {
     case 'edit':
       return 'edit'
     case 'bash':
-      // Many ACP clients render `execute` tool calls only via the terminal APIs.
-      // Since this adapter lets Atomic execute locally (no client terminal delegation),
-      // we report bash as `other` so clients show inline text output blocks.
-      return 'other'
+      return 'execute'
     default:
       return 'other'
   }

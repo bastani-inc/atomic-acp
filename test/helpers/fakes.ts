@@ -7,6 +7,15 @@ export class FakeAgentSideConnection {
   readonly updates: SessionUpdateMsg[] = []
   readonly elicitationRequests: CreateElicitationRequest[] = []
   elicitationResponses: Array<CreateElicitationResponse | Promise<CreateElicitationResponse>> = []
+  readonly permissionRequests: Parameters<AgentSideConnection['requestPermission']>[0][] = []
+  nextPermissionResponse: Awaited<ReturnType<AgentSideConnection['requestPermission']>> = {
+    outcome: { outcome: 'cancelled' }
+  }
+
+  async requestPermission(params: Parameters<AgentSideConnection['requestPermission']>[0]) {
+    this.permissionRequests.push(params)
+    return this.nextPermissionResponse
+  }
 
   async sessionUpdate(msg: SessionUpdateMsg): Promise<void> {
     this.updates.push(msg)

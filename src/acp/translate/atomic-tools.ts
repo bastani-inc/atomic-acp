@@ -1,5 +1,8 @@
 export function toolResultToText(result: unknown): string {
   if (!result) return ''
+  const details = (result as { details?: Record<string, unknown> }).details
+  const diff = details?.diff
+  if (typeof diff === 'string' && diff.trim()) return diff
 
   // Atomic tool results generally look like: { content: [{type:"text", text:"..."}], details: {...} }
   const content = (result as any).content
@@ -8,14 +11,6 @@ export function toolResultToText(result: unknown): string {
       .map((c: any) => (c?.type === 'text' && typeof c.text === 'string' ? c.text : ''))
       .filter(Boolean)
     if (texts.length) return texts.join('')
-  }
-
-  const details = (result as any)?.details
-
-  // Some Atomic tools return a unified diff in `details.diff`.
-  const diff = details?.diff
-  if (typeof diff === 'string' && diff.trim()) {
-    return diff
   }
 
   // The bash tool frequently returns stdout/stderr in `details` rather than content blocks.
