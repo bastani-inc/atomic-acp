@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AtomicAcpSession } from '../../src/acp/session.js'
+import type { AtomicRpcProcess, AtomicSessionStats } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
 test('AtomicAcpSession: cancel clears queued prompts', async () => {
@@ -64,4 +65,45 @@ test('AtomicAcpSession: Atomic exit resolves active and queued prompts', async (
   assert.equal(await first, 'error')
   assert.equal(await second, 'error')
   assert.equal(proc.prompts.length, 1)
+})
+
+test('AtomicAcpSession: cancellation during settlement waits for usage and returns cancelled', async () => {
+  const conn = new FakeAgentSideConnection()
+  let releaseStats!: (stats: AtomicSessionStats) => void
+  let statsStarted!: () => void
+  const started = new Promise<void>(resolve => {
+    statsStarted = resolve
+  })
+  const stats = new Promise<AtomicSessionStats>(resolve => {
+    releaseStats = resolve
+  })
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getSessionStats: async () => {
+      statsStarted()
+      return stats
+    }
+  })
+  const session = new AtomicAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as unknown as AtomicRpcProcess,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  let finished = false
+  const prompt = session.prompt('one').then(reason => {
+    finished = true
+    return reason
+  })
+  const queued = session.prompt('two')
+  proc.emit({ type: 'agent_settled' })
+  await started
+  await session.cancel()
+  assert.equal(await queued, 'cancelled')
+  assert.equal(finished, false)
+  releaseStats({ contextUsage: { tokens: 12, contextWindow: 100 } })
+  assert.equal(await prompt, 'cancelled')
+  assert.equal(proc.prompts.length, 1)
+  assert.ok(conn.updates.some(({ update }) => update.sessionUpdate === 'usage_update' && update.used === 12))
 })
