@@ -111,3 +111,60 @@ test('workflow tool reports action and identity through execution and results', 
   if (end?.sessionUpdate === 'tool_call_update')
     assert.deepEqual(end.content, [{ type: 'content', content: { type: 'text', text: 'Completed review' } }])
 })
+
+test('a prompt submitted during background work waits for its own settlement', async () => {
+  const { proc, session } = setup()
+  proc.promptDisposition = 'handled'
+  assert.equal(await session.prompt('/workflow run review'), 'end_turn')
+  proc.emit({ type: 'agent_start' })
+  proc.promptDisposition = 'queued'
+  let finished = false
+  const result = session.prompt('Explain the changes').then(reason => {
+    finished = true
+    return reason
+  })
+  await tick()
+  assert.equal(proc.prompts.length, 2)
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  await tick()
+  assert.equal(finished, false)
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  assert.equal(await result, 'end_turn')
+})
+
+test('completed out-of-turn background work does not prevent a later prompt from completing', async () => {
+  const { conn, proc, session } = setup()
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Background output' } })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  const result = session.prompt('Continue chatting')
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  assert.equal(await result, 'end_turn')
+  assert.ok(
+    conn.updates.some(
+      u =>
+        u.update.sessionUpdate === 'agent_message_chunk' &&
+        u.update.content.type === 'text' &&
+        u.update.content.text === 'Background output'
+    )
+  )
+})
+
+test('a follow-up starting before background settlement completes at the shared settlement', async () => {
+  const { proc, session } = setup()
+  proc.emit({ type: 'agent_start' })
+  proc.promptDisposition = 'queued'
+  const result = session.prompt('Follow up')
+  await tick()
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  assert.equal(await result, 'end_turn')
+})

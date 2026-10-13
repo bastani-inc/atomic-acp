@@ -431,7 +431,7 @@ export class AtomicAcpAgent implements ACPAgent {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
+              availableCommands: mergeCommands(builtinAvailableCommands(), commands)
             }
           })
           return
@@ -443,7 +443,7 @@ export class AtomicAcpAgent implements ACPAgent {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
+            availableCommands: mergeCommands(builtinAvailableCommands(), toAvailableCommands(fileCommands))
           }
         })
       })()
@@ -1139,7 +1139,7 @@ export class AtomicAcpAgent implements ACPAgent {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
+              availableCommands: mergeCommands(builtinAvailableCommands(), commands)
             }
           })
           return
@@ -1151,7 +1151,7 @@ export class AtomicAcpAgent implements ACPAgent {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
+            availableCommands: mergeCommands(builtinAvailableCommands(), toAvailableCommands(fileCommands))
           }
         })
       })()

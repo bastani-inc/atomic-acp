@@ -83,3 +83,48 @@ for (const data of [{}, { levels: [] }, { levels: [''] }, { levels: [1] }, { lev
     await assert.rejects(levels, /invalid levels/)
   })
 }
+
+test('AtomicRpcProcess: workflow history unwraps protocol replies and forwards filters and run IDs', async () => {
+  const { proc, stdout, written } = fixture()
+  const run = { runId: 'run-1', name: 'review', status: 'completed', summary: 'Done' }
+  const listing = proc.listWorkflowRuns('completed')
+  const listRequest = JSON.parse(written.at(-1)!)
+  assert.deepEqual(listRequest, { type: 'list_workflow_runs', status: 'completed', id: listRequest.id })
+  stdout.write(
+    JSON.stringify({
+      type: 'response',
+      command: listRequest.type,
+      success: true,
+      id: listRequest.id,
+      data: { runs: [run] }
+    }) + '\n'
+  )
+  assert.deepEqual(await listing, { runs: [run] })
+  const result = proc.getWorkflowRunSummary('run-1')
+  const request = JSON.parse(written.at(-1)!)
+  assert.deepEqual(request, { type: 'get_workflow_run_summary', runId: 'run-1', id: request.id })
+  stdout.write(
+    JSON.stringify({ type: 'response', command: request.type, success: true, id: request.id, data: run }) + '\n'
+  )
+  assert.deepEqual(await result, run)
+})
+
+test('AtomicRpcProcess: follow-up prompts preserve extension handling and queue safely during streaming', async () => {
+  const { proc, stdout, written } = fixture()
+  for (const disposition of ['handled', 'queued', 'started'] as const) {
+    const result = proc.prompt('/workflow review', [], 'followUp')
+    const request = JSON.parse(written.at(-1)!)
+    assert.deepEqual(request, {
+      type: 'prompt',
+      message: '/workflow review',
+      images: [],
+      streamingBehavior: 'followUp',
+      id: request.id
+    })
+    stdout.write(
+      JSON.stringify({ type: 'response', command: 'prompt', success: true, id: request.id, data: { disposition } }) +
+        '\n'
+    )
+    assert.equal(await result, disposition)
+  }
+})

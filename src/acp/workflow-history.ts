@@ -5,14 +5,19 @@ function record(value: unknown): Record<string, unknown> {
 function renderRun(value: unknown): string {
   const run = record(value)
   const title = [run.name, run.runId].filter(v => typeof v === 'string').join(' — ')
-  const lines = [`## ${title || 'Workflow run'}`]
+  const heading = (title || 'Workflow run')
+    .replace(/[\r\n\u2028\u2029]/g, ' ')
+    .replace(/[\\`*_{}[\]()<>#+\-.!|&]/g, '\\$&')
+  const lines: string[] = []
   for (const key of ['status', 'label', 'identity', 'summarizedThrough']) {
     if (run[key] !== undefined)
-      lines.push(`- **${key}:** ${typeof run[key] === 'object' ? JSON.stringify(run[key]) : String(run[key])}`)
+      lines.push(`${key}: ${typeof run[key] === 'object' ? JSON.stringify(run[key]) : String(run[key])}`)
   }
   if (run.summary !== undefined)
     lines.push('', typeof run.summary === 'string' ? run.summary : JSON.stringify(run.summary, null, 2))
-  return lines.join('\n')
+  const body = lines.join('\n')
+  const fence = '`'.repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(match => match[0].length + 1)))
+  return `## ${heading}\n\n${fence}text\n${body}\n${fence}`
 }
 
 export function renderWorkflowHistory(data: unknown, list: boolean): string {
