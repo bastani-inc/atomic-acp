@@ -24,3 +24,6 @@ coverage/
 
 # Lockfiles (optional: keep stable diffs)
 package-lock.json
+
+# tsup writes a temporary bundled config next to tsup.config.ts while building
+tsup.config.bundled_*.mjs

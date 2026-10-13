@@ -10,3 +10,4 @@ dist
 
 /agentDocs
 .DS_Store
+tsup.config.bundled_*.mjs
