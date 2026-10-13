@@ -1,6 +1,6 @@
 {
   "name": "atomic-acp",
-  "version": "0.0.27",
+  "version": "0.0.1",
   "description": "ACP adapter for Atomic coding agent",
   "license": "MIT",
   "author": "Bastani, Inc.",
