@@ -99,7 +99,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           npm pack --pack-destination release-assets
-          tarball="./release-assets/atomic-acp-${{ needs.integrity.outputs.version }}.tgz"
+          tarball="./release-assets/bastani-atomic-acp-${{ needs.integrity.outputs.version }}.tgz"
           test -f "$tarball"
           listing=$(mktemp)
           tar -tzf "$tarball" > "$listing"
@@ -154,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          tarball="atomic-acp-${{ needs.integrity.outputs.version }}.tgz"
+          tarball="bastani-atomic-acp-${{ needs.integrity.outputs.version }}.tgz"
           sha256sum "$tarball" > SHA256SUMS
           existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
           [[ "$existing" != false ]] || { echo "GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release." >&2; exit 1; }
@@ -190,7 +190,7 @@ jobs:
           NPM_TAG: ${{ needs.integrity.outputs.npm-tag }}
         run: |
           set -euo pipefail
-          tarball="./release-assets/atomic-acp-${VERSION}.tgz"
+          tarball="./release-assets/bastani-atomic-acp-${VERSION}.tgz"
           name=$(tar -xOf "$tarball" package/package.json | jq -er .name)
           version=$(tar -xOf "$tarball" package/package.json | jq -er .version)
           [[ "$version" == "$VERSION" ]] || { echo "$name has version $version, expected $VERSION" >&2; exit 1; }
