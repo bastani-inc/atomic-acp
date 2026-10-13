@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { promptToSessionTitle } from './translate/prompt.js'
 import {
   getAgentDir,
   getAgentDirs,
@@ -138,7 +139,7 @@ function pickTitleFromTail(tail: string): string | null {
     if (!line) continue
     try {
       const obj = JSON.parse(line) as any
-      if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
+      if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
         return obj.name.trim()
       }
     } catch {
@@ -172,7 +173,7 @@ function scanSessionInfoNameFromFile(path: string): string | null {
         if (!line) continue
         try {
           const obj = JSON.parse(line) as any
-          if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
+          if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
             lastName = obj.name.trim()
           }
         } catch {
@@ -186,7 +187,7 @@ function scanSessionInfoNameFromFile(path: string): string | null {
     if (tailLine) {
       try {
         const obj = JSON.parse(tailLine) as any
-        if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
+        if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
           lastName = obj.name.trim()
         }
       } catch {
@@ -246,38 +247,47 @@ function pickUpdatedAtFromTail(tail: string): string | null {
 }
 
 function pickFallbackTitleFromHead(path: string): string | null {
-  // Fallback to first user message.
-  // NOTE: we keep this simple: read a small head chunk and parse line-by-line.
   try {
-    const raw = readFileSync(path, { encoding: 'utf8' })
-    const lines = raw.split(/\r?\n/)
-    for (const line0 of lines) {
-      const line = line0.trim()
-      if (!line) continue
+    const lines = readFileSync(path, 'utf8').split(/\r?\n/)
+    for (const line of lines.slice(0, 2000)) {
+      if (!line.trim()) continue
       try {
-        const obj = JSON.parse(line) as any
-        if (obj?.type === 'message' && obj?.message?.role === 'user') {
-          const content = obj?.message?.content
-          if (typeof content === 'string') return content.slice(0, 80)
-          if (Array.isArray(content)) {
-            const t = content.find((c: any) => c?.type === 'text' && typeof c?.text === 'string')
-            if (t?.text) return String(t.text).slice(0, 80)
-          }
-        }
+        const entry = JSON.parse(line) as { type?: unknown; message?: { role?: unknown; content?: unknown } }
+        if (entry.type !== 'message' || entry.message?.role !== 'user') continue
+        const content = entry.message.content
+        const blocks =
+          typeof content === 'string'
+            ? [{ type: 'text' as const, text: content }]
+            : Array.isArray(content)
+              ? content.filter(
+                  (block: unknown): block is { type: 'text'; text: string } =>
+                    typeof block === 'object' &&
+                    block !== null &&
+                    'type' in block &&
+                    block.type === 'text' &&
+                    'text' in block &&
+                    typeof block.text === 'string'
+                )
+              : []
+        const title = promptToSessionTitle(blocks)
+        if (title) return title
       } catch {
-        // ignore
+        // Ignore malformed entries.
       }
-
-      // Avoid scanning extremely large files fully.
-      // If we didn't find a user message in the first ~2000 lines, give up.
-      // (Most sessions have it early.)
-      if (lines.length > 2000) break
     }
   } catch {
-    // ignore
+    // Ignore unreadable histories.
   }
-
   return null
+}
+
+export function readAtomicSessionTitle(path: string, tail?: string): string | null {
+  try {
+    const name = pickTitleFromTail(tail ?? readTail(path)) ?? scanSessionInfoNameFromFile(path)
+    return name ?? pickFallbackTitleFromHead(path)
+  } catch {
+    return null
+  }
 }
 
 export function listAtomicSessions(cwd?: string): AtomicSessionListItem[] {
@@ -298,15 +308,10 @@ export function listAtomicSessions(cwd?: string): AtomicSessionListItem[] {
     let title: string | null = null
     try {
       const tail = readTail(file)
-      title = pickTitleFromTail(tail)
+      title = readAtomicSessionTitle(file, tail)
       updatedAt = pickUpdatedAtFromTail(tail)
     } catch {
       // ignore
-    }
-
-    // If the session was named early and grew large, it may fall outside of the tail window.
-    if (!title) {
-      title = scanSessionInfoNameFromFile(file)
     }
 
     // Fallback for updatedAt when we couldn't parse timestamps from tail.
@@ -316,10 +321,6 @@ export function listAtomicSessions(cwd?: string): AtomicSessionListItem[] {
       } catch {
         updatedAt = null
       }
-    }
-
-    if (!title) {
-      title = pickFallbackTitleFromHead(file)
     }
 
     items.push({
@@ -341,8 +342,10 @@ export function listAtomicSessions(cwd?: string): AtomicSessionListItem[] {
   return items
 }
 
+export function findAtomicSession(sessionId: string, cwd?: string): AtomicSessionListItem | null {
+  return listAtomicSessions(cwd).find(s => s.sessionId === sessionId && (!cwd || s.cwd === cwd)) ?? null
+}
+
 export function findAtomicSessionFile(sessionId: string, cwd?: string): string | null {
-  const all = listAtomicSessions(cwd)
-  const found = all.find(s => s.sessionId === sessionId && (!cwd || s.cwd === cwd))
-  return found?.sessionFile ?? null
+  return findAtomicSession(sessionId, cwd)?.sessionFile ?? null
 }

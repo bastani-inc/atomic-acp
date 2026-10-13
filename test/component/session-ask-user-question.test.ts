@@ -90,6 +90,7 @@ test('AtomicAcpSession: bridges Atomic ask_user_question accept to exactly one e
   })
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -119,6 +120,7 @@ test('AtomicAcpSession: bridges ACP decline to exactly one cancelled extension_u
   })
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -148,6 +150,7 @@ test('AtomicAcpSession: bridges ACP cancel to exactly one cancelled extension_ui
   })
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -180,6 +183,7 @@ test('AtomicAcpSession: unsupported form capability cancels Atomic question with
   )
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -210,6 +214,7 @@ test('AtomicAcpSession: unsupported Atomic extension_ui_request cancels generica
   assert.equal(unsupportedAtomicMessages(conn).length, 1)
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -236,6 +241,7 @@ test('AtomicAcpSession: unsupported Atomic ask_user_question tool start emits on
   assert.equal(unsupportedAtomicMessages(conn).length, 1)
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -264,6 +270,7 @@ test('AtomicAcpSession: invalid Atomic question payload sends cancelled response
   })
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'end_turn')
 })
 
@@ -300,10 +307,11 @@ test('AtomicAcpSession: session cancel while elicitation is pending writes one c
   assert.equal(proc.extensionUiResponses.length, 1)
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'cancelled')
 })
 
-test('AtomicAcpSession: agent_end while elicitation is pending cancels Atomic question and ignores late accept', async () => {
+test('AtomicAcpSession: settlement while elicitation is pending cancels Atomic question and ignores late accept', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
   const elicitation = createDeferred<CreateElicitationResponse>()
@@ -322,6 +330,7 @@ test('AtomicAcpSession: agent_end while elicitation is pending cancels Atomic qu
 
   await waitFor(() => conn.elicitationRequests.length === 1)
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   assert.equal(await prompt, 'end_turn')
   assert.equal(proc.extensionUiResponses.length, 1)
@@ -443,6 +452,7 @@ test('AtomicAcpSession: session cancel before late ask_user_question cancels wit
   })
 
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   assert.equal(await prompt, 'cancelled')
   assert.equal(proc.extensionUiResponses.length, 1)
 })
