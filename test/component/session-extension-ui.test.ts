@@ -70,21 +70,29 @@ for (const optionId of ['yes', 'no', 'invalid', null]) {
   })
 }
 
-test('unsupported extension dialogs cancel visibly while notifications retain severity without replies', async () => {
+test('extension dialogs, notification severity, status and widgets coexist without extra replies', async () => {
   const { conn, proc } = setup()
   for (const method of ['input', 'editor']) proc.emit({ type: 'extension_ui_request', id: method, method })
   for (const level of ['info', 'warning', 'error'])
     proc.emit({ type: 'extension_ui_request', id: level, method: 'notify', message: level, notifyType: level })
   proc.emit({ type: 'extension_ui_request', id: 'status', method: 'setStatus', statusText: 'working' })
+  proc.emit({ type: 'extension_ui_request', id: 'widget', method: 'setWidget', widgetLines: ['progress'] })
   await flush()
   assert.deepEqual(
     proc.extensionUiResponses,
     ['input', 'editor'].map(id => ({ type: 'extension_ui_response', id, cancelled: true }))
   )
-  assert.equal(conn.updates.length, 5)
+  assert.equal(conn.updates.length, 7)
   assert.deepEqual(
-    conn.updates.slice(2).map(update => update.update._meta),
+    conn.updates.slice(2, 5).map(update => update.update._meta),
     ['info', 'warning', 'error'].map(level => ({ atomicAcp: { notify: { level } } }))
+  )
+  assert.deepEqual(
+    conn.updates.slice(5).map(({ update }) => update.sessionUpdate === 'agent_message_chunk' && update.content),
+    [
+      { type: 'text', text: 'working' },
+      { type: 'text', text: 'progress' }
+    ]
   )
 })
 

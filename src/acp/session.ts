@@ -553,11 +553,28 @@ export class AtomicAcpSession {
     })
 
     // Kick off Atomic, but completion is determined by Atomic events, not the RPC response.
-    // The full prompt is finished when we see `agent_settled`.
-    this.proc.prompt(t.message, t.images).catch(err => {
-      void this.finishActiveAndQueuedFromFailure(err)
-      void err
-    })
+    // Started or queued prompts finish at agent_settled; handled commands start no turn.
+    const pending = this.pendingTurn
+    this.proc
+      .prompt(t.message, t.images)
+      .then(async disposition => {
+        if (disposition !== 'handled' || this.pendingTurn !== pending) return
+        await this.publishContextUsage()
+        if (this.pendingTurn !== pending) return
+        pending.resolve(this.cancelRequested ? 'cancelled' : 'end_turn')
+        this.pendingTurn = null
+        const next = this.turnQueue.shift()
+        if (next) this.startTurn(next)
+        else {
+          this.emit({
+            sessionUpdate: 'session_info_update',
+            _meta: { atomicAcp: { queueDepth: 0, running: false } }
+          })
+        }
+      })
+      .catch(err => {
+        void this.finishActiveAndQueuedFromFailure(err)
+      })
   }
 
   private async finishActiveAndQueuedFromFailure(err: unknown): Promise<void> {
@@ -781,6 +798,20 @@ export class AtomicAcpSession {
 
       case 'extension_ui_request': {
         void this.handleExtensionUiRequest(ev)
+        if (ev.method === 'setStatus' && typeof ev.statusText === 'string' && ev.statusText) {
+          this.emitAgentText(ev.statusText)
+        } else if (ev.method === 'setWidget' && Array.isArray(ev.widgetLines)) {
+          const text = ev.widgetLines.filter((line): line is string => typeof line === 'string').join('\n')
+          if (text) this.emitAgentText(text)
+        }
+        break
+      }
+      case 'message_end': {
+        const message = ev.message as { role?: string; display?: boolean; content?: unknown } | undefined
+        if (message?.role === 'custom' && message.display === true) {
+          const text = typeof message.content === 'string' ? message.content : toolResultToText(message)
+          if (text) this.emitAgentText(text)
+        }
         break
       }
       case 'message_update': {
@@ -841,7 +872,7 @@ export class AtomicAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call',
                 toolCallId,
-                title: toolName,
+                title: toolTitle(toolName, rawInput),
                 kind: toToolKind(toolName),
                 status,
                 locations,
@@ -853,6 +884,9 @@ export class AtomicAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call_update',
                 toolCallId,
+                ...(toolName === 'workflow'
+                  ? { title: toolTitle(toolName, rawInput), kind: toToolKind(toolName) }
+                  : {}),
                 status,
                 locations,
                 rawInput
@@ -907,7 +941,7 @@ export class AtomicAcpSession {
           this.emit({
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toolName,
+            title: toolTitle(toolName, args),
             kind: toToolKind(toolName),
             status: 'in_progress',
             locations,
@@ -918,6 +952,7 @@ export class AtomicAcpSession {
           this.emit({
             sessionUpdate: 'tool_call_update',
             toolCallId,
+            ...(toolName === 'workflow' ? { title: toolTitle(toolName, args), kind: toToolKind(toolName) } : {}),
             status: 'in_progress',
             locations,
             rawInput: args
@@ -1112,6 +1147,15 @@ function formatAutoRetryMessage(ev: AtomicRpcEvent): string {
   if (delayMs > 0 && delaySeconds === 0) delaySeconds = 1
 
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`
+}
+
+function toolTitle(name: string, input: unknown): string {
+  if (name !== 'workflow') return name
+  const args = input as { action?: unknown; workflow?: unknown; runId?: unknown } | undefined
+  const details = [args?.action ?? (args?.workflow ? 'run' : undefined), args?.workflow ?? args?.runId].filter(
+    value => typeof value === 'string' && value
+  )
+  return details.length ? `workflow: ${details.join(' ')}` : name
 }
 
 function toToolKind(toolName: string): ToolKind {

@@ -38,6 +38,7 @@ export class FakeAtomicRpcProcess {
   readonly extensionUiResponses: AtomicExtensionUiResponse[] = []
   promptError: unknown = null
   promptPromise: Promise<void> | null = null
+  promptDisposition: 'started' | 'queued' | 'handled' | undefined
   abortCount = 0
 
   onEvent(handler: (ev: AtomicRpcEvent) => void): () => void {
@@ -62,10 +63,11 @@ export class FakeAtomicRpcProcess {
     for (const h of this.exitHandlers) h(err)
   }
 
-  async prompt(message: string, attachments: unknown[] = []): Promise<void> {
+  async prompt(message: string, attachments: unknown[] = []): Promise<'started' | 'queued' | 'handled' | undefined> {
     this.prompts.push({ message, attachments })
     if (this.promptPromise) await this.promptPromise
     if (this.promptError) throw this.promptError
+    return this.promptDisposition
   }
 
   async abort(): Promise<void> {

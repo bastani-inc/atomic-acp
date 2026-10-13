@@ -58,6 +58,8 @@ type AtomicRpcCommand =
   | { type: 'get_messages'; id?: string }
   // Commands
   | { type: 'get_commands'; id?: string }
+  | { type: 'list_workflow_runs'; id?: string; status?: string }
+  | { type: 'get_workflow_run_summary'; id?: string; runId: string }
 
 type AtomicRpcResponse = {
   type: 'response'
@@ -276,9 +278,11 @@ export class AtomicRpcProcess {
     return lines
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<void> {
+  async prompt(message: string, images: unknown[] = []): Promise<'started' | 'queued' | 'handled' | undefined> {
     const res = await this.request({ type: 'prompt', message, images })
     if (!res.success) throw new Error(`Atomic prompt failed: ${res.error ?? JSON.stringify(res.data)}`)
+    const disposition = (res.data as { disposition?: unknown } | undefined)?.disposition
+    return disposition === 'started' || disposition === 'queued' || disposition === 'handled' ? disposition : undefined
   }
 
   async abort(): Promise<void> {
@@ -398,6 +402,19 @@ export class AtomicRpcProcess {
         reject(e)
       }
     })
+  }
+
+  async listWorkflowRuns(status?: string): Promise<unknown> {
+    const res = await this.request({ type: 'list_workflow_runs', ...(status ? { status } : {}) })
+    if (!res.success) throw new Error(`Atomic list_workflow_runs failed: ${res.error ?? JSON.stringify(res.data)}`)
+    return res.data
+  }
+
+  async getWorkflowRunSummary(runId: string): Promise<unknown> {
+    const res = await this.request({ type: 'get_workflow_run_summary', runId })
+    if (!res.success)
+      throw new Error(`Atomic get_workflow_run_summary failed: ${res.error ?? JSON.stringify(res.data)}`)
+    return res.data
   }
 
   private request(cmd: AtomicRpcCommand, opts?: { timeoutMs?: number }): Promise<AtomicRpcResponse> {

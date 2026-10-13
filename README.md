@@ -17,7 +17,7 @@ This is an MVP-style adapter intended to be useful today and easy to iterate on.
 - Session persistence, loading, listing, and deletion.
   - Atomic stores sessions in `~/.atomic/agent/sessions/` by default; adapter mappings live in `~/.atomic/atomic-acp/session-map.json`.
   - Zed session history is supported starting with [v0.225.0](https://zed.dev/releases/preview/0.225.0). Sessions can be resumed in both Atomic and the ACP client.
-- File-based, built-in, and skill slash commands. Skills are loaded by Atomic directly.
+- File-based, built-in, skill, and extension slash commands, including Atomic workflows. Skills are loaded by Atomic directly.
 - Model and thinking selectors via ACP config options, with legacy model/mode compatibility. Model-specific thinking levels come from Atomic's `get_available_thinking_levels`; selectors refresh from applied state after changes.
 - Context usage from Atomic's `get_session_stats` → `contextUsage`, reported as ACP `usage_update` after turns, session creation/loading, and model changes. Missing or untrustworthy counts (including immediately after compaction) are omitted. Auxiliary queries have a one-second timeout; explicit `/session` requests do not.
 - Structured-question elicitation bridging when both sides support it, subject to the current Atomic limitation below.
@@ -117,7 +117,19 @@ Adapter built-ins:
 - `/steering` and `/follow-up` — inspect or set queue modes.
 - `/model` and `/thinking` — point to the client selectors; legacy clients use the mode selector for thinking.
 
-Use the client's new-session action instead of `/clear`. Extension-provided slash commands are not currently supported.
+Use the client's new-session action instead of `/clear`.
+
+## Workflows
+
+Atomic extension commands (including `/workflow`) are discovered through RPC and passed through unchanged. Usage text supplies the command argument hint; interactive argument completion itself is not part of ACP slash commands.
+
+- `/workflow list` lists available workflows; other `/workflow` actions run and inspect them.
+- `/workflow-runs [status]` lists retained runs for the current project.
+- `/workflow-run <runId>` shows a retained run summary. Summaries may lag the live run.
+
+Workflow tool progress, visible extension messages, status text, and text widgets stream as session updates, including after the initiating prompt completes. Workflow dialogs are handled by the extension UI bridge according to client capabilities.
+
+Run `npm run build && node scripts/smoke-workflow.mjs` to check `/workflow list` against the installed Atomic CLI.
 
 ## Limitations
 
