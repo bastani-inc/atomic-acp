@@ -169,10 +169,11 @@ Prompt templates load from `~/.atomic/agent/prompts/` and `<project>/.atomic/pro
 
 Set these in the `env` object of your agent server entry:
 
-| Variable                             | Default                            | Purpose                                                                           |
-| ------------------------------------ | ---------------------------------- | --------------------------------------------------------------------------------- |
-| `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.            |
-| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts. |
+| Variable                             | Default                            | Purpose                                                                                              |
+| ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.                               |
+| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts.                    |
+| `ATOMIC_ACP_ATOMIC_ARGS`             | unset                              | JSON array of extra arguments for every Atomic process, for example `["--model", "openai/gpt-5.5"]`. |
 
 ```json
 {
@@ -189,6 +190,16 @@ Set these in the `env` object of your agent server entry:
   }
 }
 ```
+
+### Extra Atomic arguments
+
+Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` starts, after the ones from `ATOMIC_ACP_ATOMIC_ARGS`:
+
+```json
+{ "command": "atomic-acp", "args": ["--", "--model", "openai/gpt-5.5", "-e", "/path/to/extension.ts"] }
+```
+
+Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--no-session`, `--continue`, `--resume`, `--fork`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
 
 Everything else comes from Atomic itself. Provider logins, models, skills, and extensions use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
 

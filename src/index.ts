@@ -1,8 +1,13 @@
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 import { AtomicAcpAgent } from './acp/agent.js'
-import { getAtomicCommand, shouldUseShellForAtomicCommand } from './atomic-rpc/command.js'
+import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './atomic-rpc/command.js'
+
+// Adapter flags come before `--`; everything after it is passed to every `atomic --mode rpc`.
+const separator = process.argv.indexOf('--', 2)
+const adapterArgs = separator < 0 ? process.argv.slice(2) : process.argv.slice(2, separator)
+
 // Terminal Auth entrypoint. The ACP client launches the agent with `--terminal-login`.
-if (process.argv.includes('--terminal-login')) {
+if (adapterArgs.includes('--terminal-login')) {
   const { spawnSync } = await import('node:child_process')
   const cmd = getAtomicCommand(process.env.ATOMIC_ACP_ATOMIC_COMMAND)
   const res = spawnSync(cmd, [], {
@@ -19,6 +24,13 @@ if (process.argv.includes('--terminal-login')) {
   }
 
   process.exit(typeof res.status === 'number' ? res.status : 1)
+}
+
+try {
+  parseAtomicExtraArgs(process.argv, process.env)
+} catch (error) {
+  process.stderr.write(`atomic-acp: ${(error as Error).message}\n`)
+  process.exit(2)
 }
 
 const input = new WritableStream<Uint8Array>({

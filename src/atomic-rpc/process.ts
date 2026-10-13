@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
-import { getAtomicCommand, shouldUseShellForAtomicCommand } from './command.js'
+import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './command.js'
 import { writeMcpServersExtension, type McpExtensionFile } from './mcp-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
@@ -102,6 +102,8 @@ type SpawnParams = {
   sessionPath?: string
   /** MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension. */
   mcpServers?: Record<string, object>
+  /** Extra Atomic arguments; defaults to ATOMIC_ACP_ATOMIC_ARGS plus the adapter's args after `--`. */
+  extraArgs?: string[]
 }
 
 export class AtomicRpcProcess {
@@ -167,6 +169,12 @@ export class AtomicRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
+    let extraArgs: string[]
+    try {
+      extraArgs = params.extraArgs ?? parseAtomicExtraArgs(process.argv, process.env)
+    } catch (e) {
+      throw new AtomicRpcSpawnError(`Could not start Atomic: ${(e as Error).message}`, { cause: e })
+    }
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
     const mcpExtension =
@@ -174,6 +182,7 @@ export class AtomicRpcProcess {
         ? writeMcpServersExtension(params.mcpServers)
         : undefined
     if (mcpExtension) args.push('-e', mcpExtension.path)
+    args.push(...extraArgs)
 
     const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn
     let child: ChildProcessWithoutNullStreams
