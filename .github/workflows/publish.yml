@@ -101,7 +101,9 @@ jobs:
           npm pack --pack-destination release-assets
           tarball="release-assets/atomic-acp-${{ needs.integrity.outputs.version }}.tgz"
           test -f "$tarball"
-          tar -tzf "$tarball" | grep -q '^package/dist/index.js$'
+          listing=$(mktemp)
+          tar -tzf "$tarball" > "$listing"
+          grep -qx 'package/dist/index.js' "$listing"
 
       - name: Build release notes
         shell: bash
