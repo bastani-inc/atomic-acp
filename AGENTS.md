@@ -26,15 +26,16 @@ Use `@agentclientprotocol/sdk`:
 
 - Do **not** implement ACP client-side FS/terminal delegation in MVP. Atomic already reads/writes and executes locally.
 - Ignore `mcpServers` for MVP (accept in params, store in session state).
-- Stream all Atomic assistant output as ACP `agent_message_chunk` initially.
+- Stream Atomic assistant text as ACP `agent_message_chunk` and reasoning as `agent_thought_chunk`.
 - Tool events: map Atomic tool execution events to ACP `tool_call` / `tool_call_update` (as text content).
 
-## Dev workflow (to be filled once scaffold exists)
+## Dev workflow
 
 - Install deps: `npm install`
 - Run in dev: `npm run dev`
 - Build: `npm run build`
 - Smoke test (stdio): `npm run smoke`
+- Real Atomic smoke test (build first; requires provider credentials): `npm run smoke:e2e:atomic`
 - Lint: `npm run lint`
 - Test: `npm run test`
 
@@ -44,7 +45,7 @@ Once the adapter runs, it should behave like an ACP agent on stdio.
 
 Quick sanity test (example):
 
-```bashN
+```bash
 # Send initialize request via stdin (exact fields depend on ACP SDK version)
 # echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' | node dist/index.js
 ```
@@ -75,5 +76,6 @@ For real validation, test with an ACP client (e.g. Zed external agent).
 
 ## References
 
-- Local ACP repo with protocol documentation and specs: `~/Dev/learning/agent-client-protocol`
-- Local Zed repo `~/Dev/learning/zed/zed`
+- ACP protocol documentation and specs: https://agentclientprotocol.com/llms.txt
+- Zed external agent configuration: https://zed.dev/docs/agents/external-agents/
+- Atomic documentation: `docs/rpc.md`, `docs/rpc/`, `docs/sessions.md`, `docs/settings.md`, and `docs/session-format.md` in the installed Atomic distribution.

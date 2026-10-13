@@ -3,7 +3,7 @@
   "version": "0.0.27",
   "description": "ACP adapter for Atomic coding agent",
   "license": "MIT",
-  "author": "Sergii Kozak <svkozak@gmail.com>",
+  "author": "Bastani, Inc.",
   "repository": {
     "type": "git",
     "url": "https://github.com/bastani-inc/atomic-acp.git"
@@ -42,6 +42,7 @@
     "lint": "eslint .",
     "test": "node --import tsx --test test/**/*.test.ts",
     "smoke": "node scripts/smoke-acp.mjs",
+    "smoke:e2e:atomic": "node scripts/smoke-e2e-atomic.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
   },
