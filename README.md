@@ -25,6 +25,13 @@ Expect some minor breaking changes.
   - Loads file-based slash commands compatible with Atomic’s conventions
   - Adds a small set of built-in commands for headless/editor usage
   - Supports skill commands (if enabled in Atomic settings, they appear as `/skill:skill-name` in the ACP client)
+- Model and thinking selectors
+  - Exposes ACP session config options, with legacy model/mode compatibility
+  - Discovers model-specific thinking levels through Atomic's `get_available_thinking_levels` RPC and refreshes selectors from applied state after changes
+- Context window usage
+  - Reports Atomic's actual context occupancy (`get_session_stats` → `contextUsage`) as ACP `usage_update` after each turn, on `session/new` and `session/load`, and after model changes
+  - Missing or untrustworthy context counts (including immediately after compaction) are omitted until valid data is available
+  - Auxiliary usage queries have a one-second timeout; explicit `/session` requests do not
 - Skills are loaded by Atomic directly and are available in ACP sessions
 - (Zed) `atomic-acp` emits “startup info” block into the session (Atomic version, context, skills, prompts, extensions - similar to `atomic` in the terminal). You can disable it by setting `quietStartup: true` in Atomic settings (`~/.atomic/agent/settings.json` or `<project>/.atomic/settings.json`). When `quietStartup` is enabled, `atomic-acp` will still emit a 'New version available' message if the installed Atomic version is outdated.
 - (Zed) Session history is supported in Zed starting with [`v0.225.0`](https://zed.dev/releases/preview/0.225.0). Session loading / history maps to Atomic's session files. Sessions can be resumed both in `atomic` and in the ACP client.
@@ -39,6 +46,7 @@ npm install -g @bastani/atomic
 
 - Node.js 22+
 - `atomic` installed and available on your `PATH` (the adapter runs the `atomic` executable)
+- Atomic RPC must support `get_available_thinking_levels` (verified with Atomic 0.9.35-alpha.4)
 - Configure Atomic separately for your model providers/API keys
 
 ## Install
@@ -155,7 +163,7 @@ Loaded from:
 Other built-in commands:
 
 - `/model` - maps to model selector in Zed
-- `/thinking` - maps to 'mode' selector in Zed
+- `/thinking` - maps to the model-specific thinking selector in Zed (legacy clients use the mode selector)
 - `/clear` - not implemented (use ACP client 'new' command)
 
 #### 3) Skill commands

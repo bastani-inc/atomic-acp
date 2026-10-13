@@ -15,7 +15,9 @@ import {
   AtomicRpcProcess,
   AtomicRpcSpawnError,
   type AtomicExtensionUiResponse,
-  type AtomicRpcEvent
+  type AtomicRpcEvent,
+  type AtomicSessionStats,
+  SESSION_STATS_TIMEOUT_MS
 } from '../atomic-rpc/process.js'
 import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/atomic-tools.js'
@@ -66,6 +68,14 @@ type PendingAtomicQuestion = {
 }
 
 type TurnTerminalReason = 'agent_settled' | 'prompt_failure' | 'process_exit'
+
+function toUsageUpdate(stats: AtomicSessionStats | null | undefined): SessionUpdate | null {
+  const used = stats?.contextUsage?.tokens
+  const size = stats?.contextUsage?.contextWindow
+  if (typeof used !== 'number' || !Number.isSafeInteger(used) || used < 0) return null
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) return null
+  return { sessionUpdate: 'usage_update', used, size }
+}
 
 function resolveSessionAtomicQuestionnaireRpcSupport(
   base: AtomicQuestionnaireRpcSupport | undefined,
@@ -461,6 +471,18 @@ export class AtomicAcpSession {
 
   private async flushEmits(): Promise<void> {
     await this.lastEmit
+  }
+
+  async publishContextUsage(): Promise<void> {
+    try {
+      if (typeof this.proc.getSessionStats === 'function') {
+        const update = toUsageUpdate(await this.proc.getSessionStats(SESSION_STATS_TIMEOUT_MS))
+        if (update) this.emit(update)
+      }
+    } catch {
+      // Context usage is auxiliary; it must not fail a prompt.
+    }
+    await this.flushEmits()
   }
 
   private startTurn(t: QueuedTurn): void {
@@ -937,7 +959,7 @@ export class AtomicAcpSession {
 
           // Ensure all updates derived from Atomic events are delivered before we resolve
           // the ACP `session/prompt` request.
-          await this.flushEmits()
+          await this.publishContextUsage()
 
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)

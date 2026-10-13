@@ -17,6 +17,9 @@ import {
   type PromptRequest,
   type PromptResponse,
   type SessionInfo,
+  type SessionConfigOption,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
   type StopReason
@@ -54,7 +57,8 @@ import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+const MODEL_CONFIG_ID = 'model'
+const THOUGHT_LEVEL_CONFIG_ID = 'thought_level'
 
 function builtinAvailableCommands(): AvailableCommand[] {
   return [
@@ -163,7 +167,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
   private async restoreSession(
     sessionId: string,
-    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers'] }
+    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; deferTitle?: boolean }
   ): Promise<AtomicAcpSession> {
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) return existing
@@ -203,7 +207,7 @@ export class AtomicAcpAgent implements ACPAgent {
       this.lastSessionCwd = cwd
       this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
       const title = readAtomicSessionTitle(stored.sessionFile)
-      if (title !== null) await session.publishTitle(title || null, null)
+      if (!opts?.deferTitle && title !== null) await session.publishTitle(title || null, null)
       return session
     })()
     this.restoringSessions.set(sessionId, restoring)
@@ -346,8 +350,15 @@ export class AtomicAcpAgent implements ACPAgent {
       session.setFileCommands(loadSlashCommandsFromAtomicGetCommands(atomicCommands))
     }
 
-    const models = await getModelState(session.proc, { state, availableModels })
-    const thinking = await getThinkingState(session.proc, { state })
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
+    try {
+      if (stateErr) throw stateErr
+      configuration = await getSessionConfiguration(session.proc, { state, availableModels })
+    } catch (err) {
+      this.cleanupFailedNewSession(session.sessionId, state)
+      throw maybeAuthRequiredError(err) ?? RequestError.internalError({}, String(err))
+    }
+    const { configOptions, models, modes } = configuration
 
     const quietStartup = getQuietStartup(params.cwd)
     const updateNotice = buildUpdateNotice()
@@ -376,8 +387,9 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const response = {
       sessionId: session.sessionId,
+      configOptions,
       models,
-      modes: thinking,
+      modes,
       _meta: {
         atomicAcp: {
           startupInfo: preludeText || null
@@ -394,6 +406,7 @@ export class AtomicAcpAgent implements ACPAgent {
     // So we must send this *after* the session/new response has been delivered.
     setTimeout(() => {
       void (async () => {
+        await session.publishContextUsage()
         try {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
@@ -930,7 +943,11 @@ export class AtomicAcpAgent implements ACPAgent {
 
     this.lastSessionCwd = params.cwd
 
-    const session = await this.restoreSession(params.sessionId, { cwd: params.cwd, mcpServers: params.mcpServers })
+    const session = await this.restoreSession(params.sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers,
+      deferTitle: true
+    })
     const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
@@ -938,11 +955,18 @@ export class AtomicAcpAgent implements ACPAgent {
     let atomicCommandsErr: unknown = null
     let state: any = null
 
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
     try {
-      state = (await proc.getState()) as any
-    } catch {
-      state = null
+      state = await proc.getState()
+      configuration = await getSessionConfiguration(proc, { state })
+    } catch (err) {
+      this.sessions.close(params.sessionId)
+      throw err
     }
+    const { configOptions, models, modes } = configuration
+    const stored = this.store.get(params.sessionId)
+    const title = stored?.sessionFile ? readAtomicSessionTitle(stored.sessionFile) : null
+    if (title !== null) await session.publishTitle(title || null, null)
 
     try {
       if (typeof proc.getCommands === 'function') atomicCommands = (await proc.getCommands()) as any
@@ -1022,12 +1046,10 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const models = await getModelState(proc, { state })
-    const thinking = await getThinkingState(proc, { state })
-
     const response = {
+      configOptions,
       models,
-      modes: thinking,
+      modes,
       _meta: {
         atomicAcp: {
           startupInfo: null
@@ -1038,6 +1060,7 @@ export class AtomicAcpAgent implements ACPAgent {
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
       void (async () => {
+        await session.publishContextUsage()
         try {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
@@ -1088,68 +1111,43 @@ export class AtomicAcpAgent implements ACPAgent {
 
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
     const session = await this.restoreSession(params.sessionId)
-
-    // Accept either:
-    //  - "provider/model" (preferred, matches how we advertise)
-    //  - "model" (fallback, we try to resolve via available models)
-    let provider: string | null = null
-    let modelId: string | null = null
-
-    if (params.modelId.includes('/')) {
-      const [p, ...rest] = params.modelId.split('/')
-      provider = p
-      modelId = rest.join('/')
-    } else {
-      modelId = params.modelId
-    }
-
-    if (!provider) {
-      const data = (await session.proc.getAvailableModels()) as any
-      const models: any[] = Array.isArray(data?.models) ? data.models : []
-      const found = models.find(m => String(m?.id) === modelId)
-      if (found) {
-        provider = String(found.provider)
-        modelId = String(found.id)
-      }
-    }
-
-    if (!provider || !modelId) {
-      throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`)
-    }
-
-    await session.proc.setModel(provider, modelId)
+    await setSessionModel(session.proc, params.modelId)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    await session.publishContextUsage()
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
     const session = await this.restoreSession(params.sessionId)
-
-    const mode = String(params.modeId)
-    if (!isThinkingLevel(mode)) {
-      throw RequestError.invalidParams(`Unknown modeId: ${mode}`)
+    if (typeof params.modeId !== 'string' || params.modeId.length === 0) {
+      throw RequestError.invalidParams('Expected nonempty string modeId')
     }
-
-    await session.proc.setThinkingLevel(mode)
-
-    // Let the client know the current mode changed (keeps the dropdown in sync).
-    void this.conn.sessionUpdate({
-      sessionId: session.sessionId,
-      update: {
-        sessionUpdate: 'current_mode_update',
-        currentModeId: mode
-      }
-    })
-
+    await session.proc.setThinkingLevel(params.modeId)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
     return {}
   }
-}
 
-function isThinkingLevel(x: string): x is ThinkingLevel {
-  return x === 'off' || x === 'minimal' || x === 'low' || x === 'medium' || x === 'high' || x === 'xhigh'
+  async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+    const session = await this.restoreSession(params.sessionId)
+    if (typeof params.value !== 'string') {
+      throw RequestError.invalidParams(`Expected string value for config option: ${params.configId}`)
+    }
+    if (params.configId === MODEL_CONFIG_ID) {
+      await setSessionModel(session.proc, params.value)
+    } else if (params.configId === THOUGHT_LEVEL_CONFIG_ID) {
+      if (params.value.length === 0) throw RequestError.invalidParams('Expected nonempty thinking level')
+      await session.proc.setThinkingLevel(params.value)
+    } else {
+      throw RequestError.invalidParams(`Unknown config option: ${params.configId}`)
+    }
+    const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    if (params.configId === MODEL_CONFIG_ID) await session.publishContextUsage()
+    return { configOptions }
+  }
 }
 
 async function getThinkingState(
   proc: AtomicRpcProcess,
-  pre?: { state?: any | null }
+  pre?: { state?: unknown }
 ): Promise<{
   availableModes: Array<{
     id: string
@@ -1158,23 +1156,12 @@ async function getThinkingState(
   }>
   currentModeId: string
 }> {
-  // Ask Atomic for current thinking level.
-  let current: ThinkingLevel = 'medium'
-
-  const state =
-    pre?.state ??
-    (await (async () => {
-      try {
-        return (await proc.getState()) as any
-      } catch {
-        return null
-      }
-    })())
-
-  const tl = typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : null
-  if (tl && isThinkingLevel(tl)) current = tl
-
-  const available: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const state = pre?.state ?? (await proc.getState())
+  const available = await proc.getAvailableThinkingLevels()
+  const current = state && typeof state === 'object' && 'thinkingLevel' in state ? state.thinkingLevel : undefined
+  if (typeof current !== 'string' || current.length === 0 || !available.includes(current)) {
+    throw new Error('Atomic returned a thinking level absent from available levels')
+  }
 
   return {
     currentModeId: current,
@@ -1184,6 +1171,82 @@ async function getThinkingState(
       description: null
     }))
   }
+}
+
+async function getSessionConfiguration(proc: AtomicRpcProcess, pre?: { state?: unknown; availableModels?: unknown }) {
+  const state = pre?.state ?? (await proc.getState())
+  const [models, modes] = await Promise.all([getModelState(proc, { ...pre, state }), getThinkingState(proc, { state })])
+  const configOptions: SessionConfigOption[] = [
+    {
+      type: 'select',
+      id: THOUGHT_LEVEL_CONFIG_ID,
+      category: 'thought_level',
+      name: 'Thinking',
+      description: 'Set the reasoning effort for this session',
+      currentValue: modes.currentModeId,
+      options: modes.availableModes.map(mode => ({
+        value: mode.id,
+        name: mode.name,
+        description: mode.description ?? null
+      }))
+    }
+  ]
+  if (models?.availableModels.length) {
+    configOptions.unshift({
+      type: 'select',
+      id: MODEL_CONFIG_ID,
+      category: 'model',
+      name: 'Model',
+      description: 'Select the model for this session',
+      currentValue: models.currentModelId,
+      options: models.availableModels.map(model => ({
+        value: model.modelId,
+        name: model.name,
+        description: model.description ?? null
+      }))
+    })
+  }
+  return { configOptions, models, modes }
+}
+
+async function emitConfigOptionsUpdate(
+  conn: AgentSideConnection,
+  sessionId: string,
+  proc: AtomicRpcProcess
+): Promise<SessionConfigOption[]> {
+  const { configOptions, modes } = await getSessionConfiguration(proc)
+  await conn.sessionUpdate({
+    sessionId,
+    update: { sessionUpdate: 'current_mode_update', currentModeId: modes.currentModeId }
+  })
+  await conn.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions } })
+  return configOptions
+}
+
+async function setSessionModel(proc: AtomicRpcProcess, requestedModelId: string): Promise<void> {
+  let provider: string | null = null
+  let modelId = requestedModelId
+  if (requestedModelId.includes('/')) {
+    const [candidateProvider, ...rest] = requestedModelId.split('/')
+    provider = candidateProvider
+    modelId = rest.join('/')
+  } else {
+    const data = await proc.getAvailableModels()
+    const models = data && typeof data === 'object' && 'models' in data && Array.isArray(data.models) ? data.models : []
+    const found = models.find((model: unknown): model is { provider: string; id: string } =>
+      Boolean(
+        model &&
+        typeof model === 'object' &&
+        'id' in model &&
+        model.id === modelId &&
+        'provider' in model &&
+        typeof model.provider === 'string'
+      )
+    )
+    if (found) provider = found.provider
+  }
+  if (!provider || !modelId) throw RequestError.invalidParams(`Unknown modelId: ${requestedModelId}`)
+  await proc.setModel(provider, modelId)
 }
 
 async function getModelState(

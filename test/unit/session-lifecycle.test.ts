@@ -99,6 +99,8 @@ test('concurrent operations restore one stored session and preserve a cleared ti
   let spawns = 0
   const modes: string[] = []
   const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['low', 'high'],
     setThinkingLevel: async (mode: string) => {
       modes.push(mode)
     }
@@ -121,6 +123,32 @@ test('concurrent operations restore one stored session and preserve a cleared ti
   )
 })
 
+test('config setters restore a saved session and publish its applied configuration', async t => {
+  const { agent, conn } = fixture(t)
+  const state = { thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }
+  let spawns = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => state,
+    getAvailableThinkingLevels: async () => ['low', 'high'],
+    setThinkingLevel: async (level: string) => {
+      state.thinkingLevel = level
+    },
+    setModel: async (provider: string, id: string) => {
+      state.model = { provider, id }
+    }
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => {
+    spawns++
+    return proc as unknown as AtomicRpcProcess
+  })
+  const thinking = await agent.setSessionConfigOption({ sessionId: 'saved', configId: 'thought_level', value: 'low' })
+  assert.equal(thinking.configOptions.find(option => option.id === 'thought_level')?.currentValue, 'low')
+  const model = await agent.setSessionConfigOption({ sessionId: 'saved', configId: 'model', value: 'test/model' })
+  assert.equal(model.configOptions.find(option => option.id === 'model')?.currentValue, 'test/model')
+  assert.equal(spawns, 1)
+  assert.equal(conn.updates.filter(({ update }) => update.sessionUpdate === 'config_option_update').length, 2)
+})
+
 test('load restores the original prompt title and replays history without renaming it', async t => {
   const { root, path, conn, agent, store } = fixture(t)
   writeFileSync(
@@ -134,6 +162,8 @@ test('load restores the original prompt title and replays history without renami
   )
   store.upsert({ sessionId: 'saved', cwd: root, sessionFile: path })
   const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['low', 'high'],
     getMessages: async () => ({ messages: [{ role: 'user', content: 'Original prompt' }] })
   })
   t.mock.method(AtomicRpcProcess, 'spawn', async () => proc as unknown as AtomicRpcProcess)

@@ -111,6 +111,7 @@ test('AtomicAcpAgent: listSessions lists Atomic sessions and loadSession replays
           ]
         }),
         getAvailableModels: async () => ({ models: [] }),
+        getAvailableThinkingLevels: async () => ['medium'],
         getState: async () => ({ thinkingLevel: 'medium' })
       } as any
     }
