@@ -164,9 +164,18 @@ When running through npm, a locally installed Atomic peer dependency may shadow 
 
 Protocol handling lives in `src/acp/`; the Atomic JSONL subprocess wrapper lives in `src/atomic-rpc/`.
 
+## Releasing
+
+Releases publish to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC, with provenance). No npm token is stored in the repository.
+
+1. Land a commit on `main` whose subject is `Release X.Y.Z` (or `Release X.Y.Z-alpha.N`) and whose `package.json` version matches.
+2. Push the tag `X.Y.Z` pointing at that commit.
+3. `.github/workflows/publish.yml` verifies the tag, runs the checks, packs the tarball, stages a draft GitHub Release, publishes to npm from the `npm-publish` environment (`latest` for stable, `next` for alpha), then publishes the GitHub Release.
+
 ## Credits
 
-This project is an Atomic-focused fork of [svkozak/pi-acp](https://github.com/svkozak/pi-acp) by Sergii Kozak. Atomic-specific maintenance is by Bastani, Inc.
+- [pi-acp](https://github.com/svkozak/pi-acp) by Sergii Kozak
+- [Pi](https://pi.dev)
 
 ## License
 
