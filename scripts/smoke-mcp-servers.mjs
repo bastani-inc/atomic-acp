@@ -1,26 +1,73 @@
 // Real-Atomic smoke test for ACP mcpServers: opens a session with a stdio MCP server that exposes
-// `echo_marker`, asks the model to call it, and checks that the server received the call.
+// `echo_marker` and an HTTP MCP server, asks the model to call `echo_marker`, and checks that the
+// server received the call. Env and header values, including `${...}` and `!command` text, must
+// reach the servers unchanged, and no copy of the secret ones may remain on disk after exit
+// (temp dir, Node's compile cache).
 // Needs `npm run build` and an Atomic provider login; skips when Atomic has no usable model.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const workspace = await mkdtemp(join(tmpdir(), 'atomic-acp-mcp-smoke-'))
+// The adapter and Atomic use this as their temp dir, so Node's default compile cache lands here too.
+const smokeTmp = await mkdtemp(join(tmpdir(), 'atomic-acp-mcp-smoke-tmp-'))
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 const fakeServer = fileURLToPath(new URL('./fixtures/echo-marker-mcp-server.mjs', import.meta.url))
 const markerLog = join(workspace, 'echo-marker.jsonl')
-const marker = `marker-${Math.random().toString(36).slice(2, 10)}`
-const extensionDirs = () => new Set(readdirSync(tmpdir()).filter(name => name.startsWith('atomic-acp-ext-')))
-const dirsBefore = extensionDirs()
+const random = () => Math.random().toString(36).slice(2, 10)
+const marker = `marker-${random()}`
+const envSecret = `mcp-env-secret-${random()}`
+const headerSecret = `mcp-header-secret-${random()}`
+const literalEnv = {
+  ECHO_MARKER_ENV_SECRET: envSecret,
+  ECHO_MARKER_ENV_TEMPLATE: '${HOME} $PATH $$',
+  ECHO_MARKER_ENV_COMMAND: '!echo smoke-command-ran'
+}
+const literalHeaders = { authorization: `Bearer ${headerSecret}`, 'x-literal': '!echo header-command-ran ${HOME}' }
+
+const httpRequests = []
+const httpServer = createServer((req, res) => {
+  httpRequests.push({ authorization: req.headers.authorization, 'x-literal': req.headers['x-literal'] })
+  let raw = ''
+  req.on('data', chunk => (raw += chunk))
+  req.on('end', () => {
+    let message
+    try {
+      message = JSON.parse(raw)
+    } catch {
+      res.writeHead(405).end()
+      return
+    }
+    if (message.id === undefined) {
+      res.writeHead(202).end()
+      return
+    }
+    const result =
+      message.method === 'initialize'
+        ? {
+            protocolVersion: message.params?.protocolVersion ?? '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'header-probe', version: '1.0.0' }
+          }
+        : message.method === 'tools/list'
+          ? { tools: [] }
+          : {}
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+  })
+})
+await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve))
+const httpUrl = `http://127.0.0.1:${httpServer.address().port}/mcp`
 
 const child = spawn(process.execPath, [entrypoint], {
   cwd: workspace,
-  env: process.env,
+  env: { ...process.env, TMPDIR: smokeTmp, TMP: smokeTmp, TEMP: smokeTmp },
   stdio: ['pipe', 'pipe', 'pipe'],
   detached: process.platform !== 'win32'
 })
@@ -85,6 +132,15 @@ async function shutdown() {
     child.kill('SIGTERM')
   }
   await exited
+  // Atomic writes Node's compile cache as it exits, so wait for the whole group before scanning.
+  for (let i = 0; child.pid && process.platform !== 'win32' && i < 100; i += 1) {
+    try {
+      process.kill(-child.pid, 0)
+    } catch {
+      break
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
 }
 
 const timeout = setTimeout(() => failPending(new Error(`MCP smoke timed out after 180 seconds. ${stderr}`)), 180000)
@@ -102,7 +158,16 @@ try {
           name: 'echo-marker',
           command: process.execPath,
           args: [fakeServer],
-          env: [{ name: 'ECHO_MARKER_LOG', value: markerLog }]
+          env: [
+            { name: 'ECHO_MARKER_LOG', value: markerLog },
+            ...Object.entries(literalEnv).map(([name, value]) => ({ name, value }))
+          ]
+        },
+        {
+          type: 'http',
+          name: 'header-probe',
+          url: httpUrl,
+          headers: Object.entries(literalHeaders).map(([name, value]) => ({ name, value }))
         }
       ]
     })
@@ -127,7 +192,19 @@ try {
     })
     assert.equal(result.stopReason, 'end_turn')
     assert.ok(existsSync(markerLog), `The MCP server was never called. Tool calls: ${JSON.stringify(toolCalls)}`)
-    const calls = readFileSync(markerLog, 'utf8').trim().split('\n').map(JSON.parse)
+    const entries = readFileSync(markerLog, 'utf8').trim().split('\n').map(JSON.parse)
+    const calls = entries.filter(entry => entry.tool)
+    for (const { env } of entries.filter(entry => entry.env)) {
+      assert.deepEqual(env, literalEnv, 'MCP env values must reach the server unchanged')
+    }
+    assert.ok(
+      entries.some(entry => entry.env),
+      'The stdio MCP server never logged its environment'
+    )
+    assert.ok(httpRequests.length > 0, 'Atomic never connected to the HTTP MCP server')
+    for (const headers of httpRequests) {
+      assert.deepEqual(headers, literalHeaders, 'MCP header values must reach the server unchanged')
+    }
     assert.ok(
       calls.some(call => call.tool === 'echo_marker' && call.marker === marker),
       `Expected an echo_marker call with ${marker}, got ${JSON.stringify(calls)}`
@@ -138,10 +215,32 @@ try {
 } finally {
   clearTimeout(timeout)
   await shutdown()
+  httpServer.closeAllConnections()
+  httpServer.close()
   await rm(workspace, { recursive: true, force: true })
 }
 
-if (!skipped) {
-  const leftover = [...extensionDirs()].filter(name => !dirsBefore.has(name))
-  assert.deepEqual(leftover, [], 'The per-session MCP extension must be deleted when the adapter exits')
+function filesUnder(dir) {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter(entry => entry.isFile())
+    .map(entry => join(entry.parentPath ?? entry.path, entry.name))
+}
+
+try {
+  if (!skipped) {
+    const leftover = readdirSync(smokeTmp).filter(name => name.startsWith('atomic-acp-ext-'))
+    assert.deepEqual(leftover, [], 'The per-session MCP extension must be deleted when the adapter exits')
+
+    const cacheDirs = [smokeTmp, join(tmpdir(), 'node-compile-cache'), process.env.NODE_COMPILE_CACHE].filter(Boolean)
+    const secrets = [envSecret, headerSecret]
+    const copies = cacheDirs.flatMap(filesUnder).filter(file => {
+      const bytes = readFileSync(file)
+      return secrets.some(secret => bytes.includes(secret) || bytes.includes(Buffer.from(secret, 'utf16le')))
+    })
+    assert.deepEqual(copies, [], `MCP secret values must not outlive the session on disk: ${copies.join(', ')}`)
+    console.log(`MCP smoke passed: no copy of the env or header secret under ${cacheDirs.join(', ')}`)
+  }
+} finally {
+  await rm(smokeTmp, { recursive: true, force: true })
 }

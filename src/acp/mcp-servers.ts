@@ -9,17 +9,9 @@ export type AtomicMcpServers = Record<string, AtomicMcpServerConfig>
 
 const RESERVED_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
 
-/**
- * Atomic resolves `${VAR}`/`$VAR` references and a leading `!command` in env and header values.
- * Values from the ACP client are literal, so escape them: `$$` is a literal `$` and `$!` a literal `!`.
- */
-function literalConfigValue(value: string): string {
-  const escaped = value.replace(/\$/g, () => '$$')
-  return escaped.startsWith('!') ? `$${escaped}` : escaped
-}
-
+/** Values stay literal: `AtomicRpcProcess` hands env and header values to Atomic so it never interprets them. */
 function toRecord(entries: Array<{ name: string; value: string }>): Record<string, string> {
-  return Object.fromEntries(entries.map(entry => [entry.name, literalConfigValue(entry.value)]))
+  return Object.fromEntries(entries.map(entry => [entry.name, entry.value]))
 }
 
 function namespaceOf(name: string): string {

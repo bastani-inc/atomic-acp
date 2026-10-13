@@ -22,7 +22,10 @@ test('AtomicRpcProcess registers MCP servers through a private extension removed
     proc = await AtomicRpcProcess.spawn({ cwd: root, atomicCommand, mcpServers })
     const report = readReport(root)
 
-    assert.deepEqual(report.registered, mcpServers)
+    assert.deepEqual(report.resolved, {
+      'run-tools': { env: { TOKEN: 'secret' } },
+      docs: { headers: { Authorization: 'Bearer x' } }
+    })
     assert.equal(report.modes.length, 1)
     const extension = report.modes[0]!
     if (process.platform !== 'win32') {
@@ -33,6 +36,42 @@ test('AtomicRpcProcess registers MCP servers through a private extension removed
 
     proc.dispose()
     assert.equal(existsSync(extension.path), false, 'extension file must be deleted when the session ends')
+  } finally {
+    proc?.dispose('SIGKILL')
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('AtomicRpcProcess keeps MCP env and header values out of the extension, and Atomic resolves them literally', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'atomic-acp-mcp-'))
+  let proc: AtomicRpcProcess | undefined
+  try {
+    const atomicCommand = writeFakeAtomic(root)
+    const secret = 'secret-6c1d0b'
+    const env = {
+      TOKEN: secret,
+      TEMPLATE: '${HOME} $USER $$ ${ATOMIC_ACP_NOPE',
+      COMMAND: '!echo pwned',
+      EMPTY: ''
+    }
+    const headers = { Authorization: `Bearer ${secret}`, 'X-Command': '!echo header-command-ran' }
+    proc = await AtomicRpcProcess.spawn({
+      cwd: root,
+      atomicCommand,
+      mcpServers: {
+        tools: { command: 'node', args: ['server.js'], env, exposure: 'direct' },
+        web: { url: 'https://example.com/mcp', headers, exposure: 'direct' }
+      }
+    })
+    const report = readReport(root)
+
+    assert.deepEqual(report.resolved, { tools: { env }, web: { headers } })
+    const [source] = report.sources
+    assert.ok(source?.includes('https://example.com/mcp'), 'names, commands and URLs stay in the extension')
+    for (const value of [secret, '${HOME}', '!echo pwned', '!echo header-command-ran']) {
+      assert.ok(!source.includes(value), `extension source must not contain ${value}`)
+    }
+    assert.equal(report.disableCompileCache, '1', "Node's compile cache must not keep a copy of the extension")
   } finally {
     proc?.dispose('SIGKILL')
     rmSync(root, { recursive: true, force: true })

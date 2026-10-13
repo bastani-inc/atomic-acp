@@ -46,7 +46,7 @@ test('toAtomicMcpServers: http headers become a headers object', () => {
   })
 })
 
-test('toAtomicMcpServers: env and header values stay literal under Atomic config interpolation', () => {
+test('toAtomicMcpServers: passes env and header values through unchanged', () => {
   const { servers } = toAtomicMcpServers([
     {
       name: 'literal',
@@ -68,12 +68,12 @@ test('toAtomicMcpServers: env and header values stay literal under Atomic config
   assert.deepEqual(servers.literal, {
     command: 'tool',
     args: [],
-    env: { A: '$!rm -rf /', B: 'cost: $$5 $${HOME} $$USER' },
+    env: { A: '!rm -rf /', B: 'cost: $5 ${HOME} $USER' },
     exposure: 'direct'
   })
   assert.deepEqual(servers.web, {
     url: 'https://example.com/mcp',
-    headers: { 'X-Key': '$!echo hi' },
+    headers: { 'X-Key': '!echo hi' },
     exposure: 'direct'
   })
 })

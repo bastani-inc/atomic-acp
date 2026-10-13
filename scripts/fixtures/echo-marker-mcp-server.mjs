@@ -1,5 +1,6 @@
 // Minimal stdio MCP server for smoke tests. It exposes one tool, `echo_marker`, and appends
-// every call to the file named by ECHO_MARKER_LOG so the smoke test can see that it ran.
+// every call to the file named by ECHO_MARKER_LOG so the smoke test can see that it ran. On
+// initialize it also logs its ECHO_MARKER_ENV_* variables, so the smoke can check what it received.
 import { appendFileSync } from 'node:fs'
 
 const log = process.env.ECHO_MARKER_LOG
@@ -13,6 +14,12 @@ function handle(message) {
   if (message.id === undefined) return
   switch (message.method) {
     case 'initialize':
+      if (log) {
+        const env = Object.fromEntries(
+          Object.entries(process.env).filter(([name]) => name.startsWith('ECHO_MARKER_ENV_'))
+        )
+        appendFileSync(log, JSON.stringify({ env }) + '\n')
+      }
       return send({
         id: message.id,
         result: {

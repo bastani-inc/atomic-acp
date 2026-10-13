@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
 import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './command.js'
-import { writeAdapterExtension, type AdapterExtensionFile } from './adapter-extension.js'
+import { writeAdapterExtension, type AdapterExtensionFile, type AdapterMcpServer } from './adapter-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -104,8 +104,11 @@ type SpawnParams = {
   atomicCommand?: string
   /** If set, Atomic will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
-  /** MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension. */
-  mcpServers?: Record<string, object>
+  /**
+   * MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension.
+   * Env and header values are literal: Atomic receives them through its environment.
+   */
+  mcpServers?: Record<string, AdapterMcpServer>
   /** No person can answer questions: `ask_user_question` returns a clear "no person available" result. */
   headless?: boolean
   /** Extra Atomic arguments; defaults to ATOMIC_ACP_ATOMIC_ARGS plus the adapter's args after `--`. */
@@ -196,7 +199,10 @@ export class AtomicRpcProcess {
       child = start(cmd, args, {
         cwd: params.cwd,
         stdio: 'pipe',
-        env: process.env
+        // Atomic enables Node's on-disk compile cache, which would keep a copy of the extension.
+        env: adapterExtension
+          ? { ...process.env, ...adapterExtension.env, NODE_DISABLE_COMPILE_CACHE: '1' }
+          : process.env
       }) as ChildProcessWithoutNullStreams
     } catch (e) {
       adapterExtension?.dispose()

@@ -1,11 +1,24 @@
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+// Atomic's own config value resolver, from the installed peer dependency.
+const atomicResolver = pathToFileURL(
+  join(dirname(createRequire(import.meta.url).resolve('@bastani/atomic')), 'core', 'resolve-config-value.js')
+).href
 
 export type FakeAtomicReport = {
   pid: number
   args: string[]
   modes: Array<{ path: string; file: number; dir: number }>
   registered: Record<string, unknown>
+  /** Each registered server's env and header values as Atomic's resolver turns them into real values. */
+  resolved: Record<string, { env?: Record<string, string>; headers?: Record<string, string> }>
+  /** Source of each `-e` extension, read when Atomic loaded it. */
+  sources: string[]
+  /** NODE_DISABLE_COMPILE_CACHE as Atomic saw it. */
+  disableCompileCache: string | null
   /** Result of each extension `tool_call` handler for a probe call to the named tool. */
   toolCallResults: Record<string, unknown[]>
 }
@@ -20,7 +33,8 @@ export function writeFakeAtomicCli(root: string): string {
   writeFileSync(
     join(root, 'fake-atomic.mjs'),
     [
-      "import { statSync, writeFileSync } from 'node:fs'",
+      "import { readFileSync, statSync, writeFileSync } from 'node:fs'",
+      `import { resolveConfigValueOrThrow } from ${JSON.stringify(atomicResolver)}`,
       "import { dirname } from 'node:path'",
       "import { createInterface } from 'node:readline'",
       "import { pathToFileURL } from 'node:url'",
@@ -29,8 +43,10 @@ export function writeFakeAtomicCli(root: string): string {
       'const registered = {}',
       'const handlers = []',
       'const modes = []',
+      'const sources = []',
       'for (const path of extensions) {',
       '  modes.push({ path, file: statSync(path).mode & 0o777, dir: statSync(dirname(path)).mode & 0o777 })',
+      '  sources.push(readFileSync(path, "utf8"))',
       '  const mod = await import(pathToFileURL(path).href)',
       '  mod.default({',
       '    registerMcpServer: (name, config) => { registered[name] = config },',
@@ -42,7 +58,10 @@ export function writeFakeAtomicCli(root: string): string {
       '  toolCallResults[toolName] = []',
       '  for (const handler of handlers) toolCallResults[toolName].push((await handler({ toolName, toolCallId: "probe", input: {} }, {})) ?? null)',
       '}',
-      `writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, args, modes, registered, toolCallResults }))`,
+      'const resolveAll = values => values && Object.fromEntries(Object.entries(values).map(([k, v]) => [k, resolveConfigValueOrThrow(v, k)]))',
+      'const resolved = Object.fromEntries(Object.entries(registered).map(([name, c]) => [name, { env: resolveAll(c.env), headers: resolveAll(c.headers) }]))',
+      'const disableCompileCache = process.env.NODE_DISABLE_COMPILE_CACHE ?? null',
+      `writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, args, modes, registered, resolved, sources, disableCompileCache, toolCallResults }))`,
       'createInterface({ input: process.stdin }).on("line", line => {',
       '  const command = JSON.parse(line)',
       '  process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data: {} }) + "\\n")',

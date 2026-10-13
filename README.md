@@ -120,7 +120,7 @@ MCP servers
 
 - MCP servers the editor passes in `session/new` and `session/load` are given to that session's Atomic process. Stdio and streamable HTTP servers work; SSE servers are skipped with a warning on stderr, because Atomic doesn't support SSE.
 - Their tools are exposed directly as `mcp__<server>__<tool>`, so a prompt can name a tool and the model can call it without codemode or tool search.
-- `atomic-acp` doesn't write to `~/.atomic/agent/mcp.json` or `.atomic/mcp.json`. It registers the servers through a temporary Atomic extension in a private directory, deleted when the session's Atomic process exits or the adapter quits. Server names are reduced to letters, digits, `_` and `-`.
+- `atomic-acp` doesn't write to `~/.atomic/agent/mcp.json` or `.atomic/mcp.json`. It registers the servers through a temporary Atomic extension in a private directory, deleted when the session's Atomic process exits or the adapter quits. Env and header values are never written to that file: they reach Atomic through its environment and are used exactly as the editor sent them, with no `${VAR}` or `!command` expansion. Node's compile cache is turned off for that Atomic process so it keeps no copy of the extension. Server names are reduced to letters, digits, `_` and `-`.
 - If your own Atomic MCP configuration defines a server with the same name, your configuration wins, as it does for any extension-contributed server.
 - Loading a running session with a different set of servers restarts its Atomic process. A session restored by a prompt after an adapter restart has no editor MCP servers until the editor loads it again.
 
