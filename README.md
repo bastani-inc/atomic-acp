@@ -55,7 +55,7 @@ atomic   # sign in, then quit
 ### Install
 
 ```bash
-npm install -g atomic-acp
+npm install -g @bastani/atomic-acp
 ```
 
 To run from source instead, clone this repository and run `npm install && npm run build`. The entry point is `dist/index.js`.
@@ -82,7 +82,7 @@ Other ways to launch it:
 | Setup                     | `command`    | `args`                                  |
 | ------------------------- | ------------ | --------------------------------------- |
 | Global install            | `atomic-acp` | `[]`                                    |
-| No install, always latest | `npx`        | `["-y", "atomic-acp"]`                  |
+| No install, always latest | `npx`        | `["-y", "@bastani/atomic-acp"]`         |
 | Source checkout           | `node`       | `["/path/to/atomic-acp/dist/index.js"]` |
 
 Then open the agent panel, pick **Atomic**, and start a thread.
