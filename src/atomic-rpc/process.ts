@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from './command.js'
+import { writeMcpServersExtension, type McpExtensionFile } from './mcp-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -99,6 +100,8 @@ type SpawnParams = {
   atomicCommand?: string
   /** If set, Atomic will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /** MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension. */
+  mcpServers?: Record<string, object>
 }
 
 export class AtomicRpcProcess {
@@ -110,9 +113,11 @@ export class AtomicRpcProcess {
   private eventHandlers: Array<(ev: AtomicRpcEvent) => void> = []
   private exitHandlers: Array<(err: Error) => void> = []
   private readonly preludeLines: string[] = []
+  private readonly mcpExtension: McpExtensionFile | undefined
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(child: ChildProcessWithoutNullStreams, mcpExtension?: McpExtensionFile) {
     this.child = child
+    this.mcpExtension = mcpExtension
 
     let stdoutBuffer = ''
     child.stdout.setEncoding('utf8')
@@ -144,6 +149,7 @@ export class AtomicRpcProcess {
     })
 
     child.on('exit', (code, signal) => {
+      this.mcpExtension?.dispose()
       const err = new Error(`Atomic process exited (code=${code}, signal=${signal})`)
       this.rejectPendingAndNotifyExit(err)
     })
@@ -163,13 +169,24 @@ export class AtomicRpcProcess {
     // (e.g. MCP extensions, prompt templates for workflows).
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
+    const mcpExtension =
+      params.mcpServers && Object.keys(params.mcpServers).length > 0
+        ? writeMcpServersExtension(params.mcpServers)
+        : undefined
+    if (mcpExtension) args.push('-e', mcpExtension.path)
 
     const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn
-    const child = start(cmd, args, {
-      cwd: params.cwd,
-      stdio: 'pipe',
-      env: process.env
-    }) as ChildProcessWithoutNullStreams
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = start(cmd, args, {
+        cwd: params.cwd,
+        stdio: 'pipe',
+        env: process.env
+      }) as ChildProcessWithoutNullStreams
+    } catch (e) {
+      mcpExtension?.dispose()
+      throw e
+    }
 
     // Ensure spawn failures (e.g. ENOENT when Atomic isn't installed) are surfaced as a
     // deterministic error instead of later EPIPE/internal-error noise.
@@ -192,6 +209,7 @@ export class AtomicRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
+      mcpExtension?.dispose()
       const code = typeof e?.code === 'string' ? e.code : undefined
       if (code === 'ENOENT') {
         throw new AtomicRpcSpawnError(
@@ -214,7 +232,7 @@ export class AtomicRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new AtomicRpcProcess(child)
+    const proc = new AtomicRpcProcess(child, mcpExtension)
 
     // Best-effort handshake.
     // Important: Atomic may emit a get_state response pointing at a sessionFile in a directory
@@ -256,6 +274,7 @@ export class AtomicRpcProcess {
   }
 
   dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
+    this.mcpExtension?.dispose()
     if (this.child.killed) return
     try {
       this.child.kill(signal as any)

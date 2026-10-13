@@ -38,6 +38,7 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
+import { atomicMcpServersForSpawn } from './mcp-servers.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -148,7 +149,8 @@ export class SessionManager {
     try {
       proc = await AtomicRpcProcess.spawn({
         cwd: params.cwd,
-        atomicCommand: params.atomicCommand
+        atomicCommand: params.atomicCommand,
+        mcpServers: atomicMcpServersForSpawn(params.mcpServers)
       })
     } catch (e) {
       if (e instanceof AtomicRpcSpawnError) {

@@ -38,6 +38,7 @@ import {
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type AtomicAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
+import { atomicMcpServersForSpawn, sameMcpServers } from './mcp-servers.js'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from '../atomic-rpc/command.js'
 import { AtomicRpcProcess, AtomicRpcSpawnError } from '../atomic-rpc/process.js'
 import { listAtomicSessions, findAtomicSession, readAtomicSessionTitle } from './atomic-sessions.js'
@@ -200,7 +201,9 @@ export class AtomicAcpAgent implements ACPAgent {
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) {
       if (opts?.cwd && existing.cwd !== opts.cwd) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
-      return existing
+      // MCP servers are fixed when Atomic starts, so a load with different servers needs a new process.
+      if (!opts?.mcpServers || sameMcpServers(existing.mcpServers, opts.mcpServers)) return existing
+      this.sessions.close(sessionId)
     }
     const stored = this.findStoredSession(sessionId, opts?.cwd)
     if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
@@ -210,7 +213,8 @@ export class AtomicAcpAgent implements ACPAgent {
       proc = await AtomicRpcProcess.spawn({
         cwd,
         sessionPath: stored.sessionFile,
-        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
+        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
+        mcpServers: atomicMcpServersForSpawn(opts?.mcpServers)
       })
     } catch (error) {
       if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
@@ -258,7 +262,7 @@ export class AtomicAcpAgent implements ACPAgent {
       }),
       agentCapabilities: {
         loadSession: true,
-        mcpCapabilities: { http: false, sse: false },
+        mcpCapabilities: { http: true, sse: false },
         promptCapabilities: {
           image: true,
           audio: false,
@@ -282,7 +286,6 @@ export class AtomicAcpAgent implements ACPAgent {
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
 
-    // Atomic doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
       cwd: params.cwd,
       mcpServers: params.mcpServers,

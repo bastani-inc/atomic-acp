@@ -25,7 +25,7 @@ Use `@agentclientprotocol/sdk`:
 ## Implementation constraints / decisions
 
 - Do **not** implement ACP client-side FS/terminal delegation in MVP. Atomic already reads/writes and executes locally.
-- Ignore `mcpServers` for MVP (accept in params, store in session state).
+- Pass ACP `mcpServers` to Atomic through a private per-session extension that calls `pi.registerMcpServer` (see `src/acp/mcp-servers.ts`, `src/atomic-rpc/mcp-extension.ts`). Never write the user's or project's `mcp.json`.
 - Stream Atomic assistant text as ACP `agent_message_chunk` and reasoning as `agent_thought_chunk`.
 - Tool events: map Atomic tool execution events to ACP `tool_call` / `tool_call_update` (as text content).
 

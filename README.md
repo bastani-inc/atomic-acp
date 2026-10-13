@@ -116,6 +116,14 @@ Commands and dialogs
 - When an Atomic extension or workflow asks you to pick, confirm, or type something, the editor shows a form. Clients without form support get a permission prompt for pick and confirm questions.
 - Extension notifications show up in the thread.
 
+MCP servers
+
+- MCP servers the editor passes in `session/new` and `session/load` are given to that session's Atomic process. Stdio and streamable HTTP servers work; SSE servers are skipped with a warning on stderr, because Atomic doesn't support SSE.
+- Their tools are exposed directly as `mcp__<server>__<tool>`, so a prompt can name a tool and the model can call it without codemode or tool search.
+- `atomic-acp` doesn't write to `~/.atomic/agent/mcp.json` or `.atomic/mcp.json`. It registers the servers through a temporary Atomic extension in a private directory, deleted when the session's Atomic process exits or the adapter quits. Server names are reduced to letters, digits, `_` and `-`.
+- If your own Atomic MCP configuration defines a server with the same name, your configuration wins, as it does for any extension-contributed server.
+- Loading a running session with a different set of servers restarts its Atomic process. A session restored by a prompt after an adapter restart has no editor MCP servers until the editor loads it again.
+
 Startup info
 
 - New threads open with a short summary of the Atomic version, skills, prompts, and extensions in use. Set `quietStartup: true` in your Atomic settings to hide it.
@@ -188,7 +196,6 @@ Everything else comes from Atomic itself. Provider logins, models, skills, and e
 
 - `ask_user_question` isn't available over ACP because Atomic RPC mode can't carry its custom UI.
 - The editor's file and terminal APIs aren't used. Atomic reads, writes, and runs commands locally, and the editor displays the results.
-- MCP servers configured in the editor are ignored. Configure MCP servers in Atomic instead.
 - If you send several messages while Atomic is busy, they are queued and sent one at a time.
 - Zed is the client this is tested against. Other ACP clients should work but may render some updates differently.
 
@@ -205,11 +212,12 @@ npm run format
 
 The ACP side lives in `src/acp/`, and the wrapper around the Atomic subprocess lives in `src/atomic-rpc/`.
 
-Two smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
+Three smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
 
 ```bash
 npm run build
 npm run smoke:e2e:atomic          # one prompt, checks streamed text and end_turn
+npm run smoke:mcp                 # an editor MCP server's tool is called through ACP
 node scripts/smoke-workflow.mjs   # runs /workflow list over ACP
 ```
 
