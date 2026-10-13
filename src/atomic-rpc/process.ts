@@ -34,7 +34,7 @@ export function splitLfJsonlChunk(buffer: string, chunk: string): { lines: strin
 }
 
 type AtomicRpcCommand =
-  | { type: 'prompt'; id?: string; message: string; images?: unknown[] }
+  | { type: 'prompt'; id?: string; message: string; images?: unknown[]; streamingBehavior?: 'followUp' }
   | { type: 'abort'; id?: string }
   | { type: 'get_state'; id?: string }
   // Model
@@ -278,8 +278,17 @@ export class AtomicRpcProcess {
     return lines
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<'started' | 'queued' | 'handled' | undefined> {
-    const res = await this.request({ type: 'prompt', message, images })
+  async prompt(
+    message: string,
+    images: unknown[] = [],
+    streamingBehavior?: 'followUp'
+  ): Promise<'started' | 'queued' | 'handled' | undefined> {
+    const res = await this.request({
+      type: 'prompt',
+      message,
+      images,
+      ...(streamingBehavior ? { streamingBehavior } : {})
+    })
     if (!res.success) throw new Error(`Atomic prompt failed: ${res.error ?? JSON.stringify(res.data)}`)
     const disposition = (res.data as { disposition?: unknown } | undefined)?.disposition
     return disposition === 'started' || disposition === 'queued' || disposition === 'handled' ? disposition : undefined

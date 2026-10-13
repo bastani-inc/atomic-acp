@@ -288,6 +288,7 @@ export class AtomicAcpSession {
 
   // Retries and queued continuations may emit multiple agent_end events before settlement.
   private inAgentLoop = false
+  private backgroundTurn = false
 
   private fileSnapshots = new Map<string, Array<{ path: string; oldText: string | null }>>()
   private fileMutationToolCallIds = new Set<string>()
@@ -541,7 +542,7 @@ export class AtomicAcpSession {
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.activeTurnTerminalReason = null
-    this.inAgentLoop = false
+    // Independent workflow runs may still be streaming when a new prompt arrives.
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
     void this.maybeAutoTitle(t.title)
@@ -556,9 +557,10 @@ export class AtomicAcpSession {
     // Started or queued prompts finish at agent_settled; handled commands start no turn.
     const pending = this.pendingTurn
     this.proc
-      .prompt(t.message, t.images)
+      .prompt(t.message, t.images, 'followUp')
       .then(async disposition => {
         if (disposition !== 'handled' || this.pendingTurn !== pending) return
+        if (this.inAgentLoop) this.backgroundTurn = true
         await this.publishContextUsage()
         if (this.pendingTurn !== pending) return
         pending.resolve(this.cancelRequested ? 'cancelled' : 'end_turn')
@@ -1079,6 +1081,7 @@ export class AtomicAcpSession {
 
       case 'agent_start': {
         this.inAgentLoop = true
+        this.backgroundTurn = !this.pendingTurn
         break
       }
 
@@ -1094,6 +1097,11 @@ export class AtomicAcpSession {
       }
 
       case 'agent_settled': {
+        if (this.backgroundTurn || !this.pendingTurn) {
+          this.backgroundTurn = false
+          this.inAgentLoop = false
+          break
+        }
         this.activeTurnTerminalReason = 'agent_settled'
 
         // Cancel any pending Atomic questionnaire before resolving the ACP prompt.
