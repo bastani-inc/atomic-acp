@@ -155,8 +155,10 @@ test('loadSlashCommands: expands ~ in ATOMIC_CODING_AGENT_DIR', () => {
   writeFileSync(join(promptsDir, 'homecmd.md'), 'Hello from home override\n', 'utf8')
 
   const oldHome = process.env.HOME
+  const oldUserProfile = process.env.USERPROFILE
   const oldEnv = process.env.ATOMIC_CODING_AGENT_DIR
   process.env.HOME = home
+  process.env.USERPROFILE = home
   process.env.ATOMIC_CODING_AGENT_DIR = '~/custom-agent'
 
   try {
@@ -165,6 +167,8 @@ test('loadSlashCommands: expands ~ in ATOMIC_CODING_AGENT_DIR', () => {
   } finally {
     if (oldHome === undefined) delete process.env.HOME
     else process.env.HOME = oldHome
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = oldUserProfile
     if (oldEnv === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR
     else process.env.ATOMIC_CODING_AGENT_DIR = oldEnv
   }
