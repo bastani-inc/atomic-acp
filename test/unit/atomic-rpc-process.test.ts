@@ -38,13 +38,13 @@ test('AtomicRpcProcess.writeExtensionUiResponse writes uncorrelated JSONL withou
 
   await (proc as AtomicRpcProcess).writeExtensionUiResponse({
     type: 'extension_ui_response',
-    id: 'ask-1',
-    questionnaireResult: { answers: [], cancelled: true }
+    id: 'select',
+    value: 'selected option'
   })
 
   await (proc as AtomicRpcProcess).writeExtensionUiResponse({
     type: 'extension_ui_response',
-    id: 'ask-2',
+    id: 'cancel',
     cancelled: true
   })
 
@@ -54,15 +54,15 @@ test('AtomicRpcProcess.writeExtensionUiResponse writes uncorrelated JSONL withou
     written[0],
     JSON.stringify({
       type: 'extension_ui_response',
-      id: 'ask-1',
-      questionnaireResult: { answers: [], cancelled: true }
+      id: 'select',
+      value: 'selected option'
     }) + '\n'
   )
   assert.equal(
     written[1],
     JSON.stringify({
       type: 'extension_ui_response',
-      id: 'ask-2',
+      id: 'cancel',
       cancelled: true
     }) + '\n'
   )

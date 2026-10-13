@@ -57,11 +57,7 @@ import {
   NO_CLIENT_ELICITATION_SUPPORT,
   readClientElicitationSupport,
   type ClientElicitationSupport
-} from './elicitation/atomic-questionnaire.js'
-import {
-  detectAtomicQuestionnaireRpcSupport,
-  type AtomicQuestionnaireRpcSupport
-} from './elicitation/atomic-questionnaire-support.js'
+} from './elicitation/extension-dialog.js'
 import { isAbsolute } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
@@ -221,20 +217,13 @@ export class AtomicAcpAgent implements ACPAgent {
       throw error
     }
     try {
-      let state: unknown = null
-      try {
-        state = await proc.getState()
-      } catch {
-        /* Capability detection falls back to the installed version. */
-      }
       const session = this.sessions.getOrCreate(sessionId, {
         cwd,
         mcpServers: opts?.mcpServers ?? [],
         conn: this.conn,
         proc,
         fileCommands: loadSlashCommands(cwd),
-        clientElicitationSupport: this.clientElicitationSupport,
-        atomicQuestionnaireRpcSupport: detectInstalledAtomicQuestionnaireRpcSupport(state)
+        clientElicitationSupport: this.clientElicitationSupport
       })
       this.lastSessionCwd = cwd
       this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
@@ -292,7 +281,6 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
-    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport()
 
     // Atomic doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
@@ -301,8 +289,7 @@ export class AtomicAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
-      clientElicitationSupport: this.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport
+      clientElicitationSupport: this.clientElicitationSupport
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -1449,17 +1436,6 @@ function getAtomicVersionOutput(): string {
     shell: shouldUseShellForAtomicCommand(cmd)
   })
   return String(atomicVersion.stdout ?? '').trim() || String(atomicVersion.stderr ?? '').trim()
-}
-
-function detectInstalledAtomicQuestionnaireRpcSupport(rpcCapabilities?: unknown): AtomicQuestionnaireRpcSupport {
-  let versionOutput: string | null = null
-  try {
-    versionOutput = getAtomicVersionOutput()
-  } catch {
-    versionOutput = null
-  }
-
-  return detectAtomicQuestionnaireRpcSupport({ versionOutput, rpcCapabilities: rpcCapabilities ?? undefined })
 }
 
 function buildUpdateNotice(): string | null {

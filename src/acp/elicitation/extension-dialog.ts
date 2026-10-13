@@ -1,6 +1,21 @@
-import { createFormElicitation } from './atomic-questionnaire.js'
-import type { AgentSideConnection, ElicitationPropertySchema } from '@agentclientprotocol/sdk'
+import type { AgentSideConnection, ElicitationPropertySchema, InitializeRequest } from '@agentclientprotocol/sdk'
 import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../atomic-rpc/process.js'
+
+export type ClientElicitationSupport = { form: true } | { form: false; reason: 'missing_client_capability' }
+
+export const NO_CLIENT_ELICITATION_SUPPORT: ClientElicitationSupport = {
+  form: false,
+  reason: 'missing_client_capability'
+}
+
+export function readClientElicitationSupport(params: InitializeRequest): ClientElicitationSupport {
+  const form = params.clientCapabilities?.elicitation?.form
+  if (form !== null && typeof form === 'object' && !Array.isArray(form)) {
+    return { form: true }
+  }
+
+  return NO_CLIENT_ELICITATION_SUPPORT
+}
 
 export function requestExtensionDialog(
   conn: AgentSideConnection,
@@ -51,7 +66,7 @@ async function requestDialog(
           ...(typeof ev.placeholder === 'string' ? { description: ev.placeholder } : {}),
           ...(typeof ev.prefill === 'string' ? { default: ev.prefill } : {})
         }
-      const response = await createFormElicitation(conn, {
+      const response = await conn.unstable_createElicitation({
         sessionId,
         mode: 'form',
         message: typeof ev.message === 'string' ? `${title}\n\n${ev.message}` : title,

@@ -76,11 +76,6 @@ export type AtomicExtensionUiResponse =
   | {
       type: 'extension_ui_response'
       id: string
-      questionnaireResult: unknown
-    }
-  | {
-      type: 'extension_ui_response'
-      id: string
       cancelled: true
     }
 

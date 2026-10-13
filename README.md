@@ -186,7 +186,7 @@ Everything else comes from Atomic itself. Provider logins, models, skills, and e
 
 ## Limitations
 
-- `ask_user_question` doesn't work over ACP yet. Atomic 0.9.35 can't send that tool's custom UI through RPC mode, so the tool returns an error. Extension and workflow forms are unaffected.
+- `ask_user_question` isn't available over ACP because Atomic RPC mode can't carry its custom UI.
 - The editor's file and terminal APIs aren't used. Atomic reads, writes, and runs commands locally, and the editor displays the results.
 - MCP servers configured in the editor are ignored. Configure MCP servers in Atomic instead.
 - If you send several messages while Atomic is busy, they are queued and sent one at a time.
