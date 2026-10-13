@@ -40,7 +40,8 @@ type AtomicRpcCommand =
   | { type: 'get_available_models'; id?: string }
   | { type: 'set_model'; id?: string; provider: string; modelId: string }
   // Thinking
-  | { type: 'set_thinking_level'; id?: string; level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' }
+  | { type: 'get_available_thinking_levels'; id?: string }
+  | { type: 'set_thinking_level'; id?: string; level: string }
   // Modes
   | { type: 'set_follow_up_mode'; id?: string; mode: 'all' | 'one-at-a-time' }
   | { type: 'set_steering_mode'; id?: string; mode: 'all' | 'one-at-a-time' }
@@ -79,6 +80,18 @@ export type AtomicExtensionUiResponse =
     }
 
 export type AtomicRpcEvent = Record<string, unknown>
+
+/** Maximum wait for an auxiliary context-usage update. */
+export const SESSION_STATS_TIMEOUT_MS = 1_000
+
+export type AtomicSessionStats = {
+  sessionId?: string
+  sessionFile?: string
+  totalMessages?: number
+  cost?: number
+  tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number }
+  contextUsage?: { tokens?: number | null; contextWindow?: number | null } | null
+}
 
 type SpawnParams = {
   cwd: string
@@ -122,14 +135,8 @@ export class AtomicRpcProcess {
 
         if (msg?.type === 'response') {
           const id = typeof msg.id === 'string' ? msg.id : undefined
-          if (id) {
-            const pending = this.pending.get(id)
-            if (pending) {
-              this.pending.delete(id)
-              pending.resolve(msg as AtomicRpcResponse)
-              continue
-            }
-          }
+          if (id !== undefined) this.pending.get(id)?.resolve(msg as AtomicRpcResponse)
+          continue
         }
 
         for (const h of this.eventHandlers) h(msg as AtomicRpcEvent)
@@ -298,7 +305,23 @@ export class AtomicRpcProcess {
     return res.data
   }
 
-  async setThinkingLevel(level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'): Promise<void> {
+  async getAvailableThinkingLevels(): Promise<string[]> {
+    const res = await this.request({ type: 'get_available_thinking_levels' })
+    if (!res.success)
+      throw new Error(`Atomic get_available_thinking_levels failed: ${res.error ?? JSON.stringify(res.data)}`)
+    const data = res.data
+    const levels = data && typeof data === 'object' && 'levels' in data ? data.levels : undefined
+    if (
+      !Array.isArray(levels) ||
+      levels.length === 0 ||
+      !levels.every(level => typeof level === 'string' && level.length > 0)
+    ) {
+      throw new Error('Atomic get_available_thinking_levels returned invalid levels')
+    }
+    return levels
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
     const res = await this.request({ type: 'set_thinking_level', level })
     if (!res.success) throw new Error(`Atomic set_thinking_level failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
@@ -324,10 +347,10 @@ export class AtomicRpcProcess {
     if (!res.success) throw new Error(`Atomic set_auto_compaction failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
-  async getSessionStats(): Promise<unknown> {
-    const res = await this.request({ type: 'get_session_stats' })
+  async getSessionStats(timeoutMs?: number): Promise<AtomicSessionStats> {
+    const res = await this.request({ type: 'get_session_stats' }, { timeoutMs })
     if (!res.success) throw new Error(`Atomic get_session_stats failed: ${res.error ?? JSON.stringify(res.data)}`)
-    return res.data
+    return (res.data ?? {}) as AtomicSessionStats
   }
 
   async setSessionName(name: string): Promise<void> {
@@ -374,15 +397,40 @@ export class AtomicRpcProcess {
     })
   }
 
-  private request(cmd: AtomicRpcCommand): Promise<AtomicRpcResponse> {
+  private request(cmd: AtomicRpcCommand, opts?: { timeoutMs?: number }): Promise<AtomicRpcResponse> {
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
+    const timeoutMs = opts?.timeoutMs
 
     return new Promise<AtomicRpcResponse>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const drop = (): boolean => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        return this.pending.delete(id)
+      }
+      this.pending.set(id, {
+        resolve: res => {
+          drop()
+          resolve(res)
+        },
+        reject: error => {
+          drop()
+          reject(error)
+        }
+      })
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          timer = undefined
+          if (!this.pending.delete(id)) return
+          reject(new Error(`Atomic ${cmd.type} timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+        timer.unref?.()
+      }
       this.writeJsonLine(withId).catch(err => {
-        this.pending.delete(id)
+        if (!drop()) return
         reject(err)
       })
     })
