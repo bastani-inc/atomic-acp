@@ -604,7 +604,7 @@ test('AtomicAcpSession: queues concurrent prompt and starts it after agent_settl
   assert.equal(r2, 'end_turn')
 })
 
-test('AtomicAcpSession: drains queued prompts when active prompt fails', async () => {
+test('AtomicAcpSession: fails active and queued prompts when the active prompt fails', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
   proc.promptError = new Error('rpc failed')
@@ -623,10 +623,12 @@ test('AtomicAcpSession: drains queued prompts when active prompt fails', async (
 
   assert.equal(proc.prompts.length, 1)
 
-  const [r1, r2] = await Promise.all([first, second])
+  const [r1, r2] = await Promise.allSettled([first, second])
 
-  assert.equal(r1, 'error')
-  assert.equal(r2, 'error')
+  for (const result of [r1, r2]) {
+    assert.equal(result.status, 'rejected')
+    assert.match(String((result as PromiseRejectedResult).reason?.message), /rpc failed/)
+  }
   assert.equal(proc.prompts.length, 1)
   assert.equal((conn.updates.at(-1)?.update._meta as any)?.atomicAcp?.queueDepth, 0)
 })

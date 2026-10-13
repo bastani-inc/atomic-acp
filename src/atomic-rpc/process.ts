@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
-import { getAtomicCommand, shouldUseShellForAtomicCommand } from './command.js'
+import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './command.js'
+import { writeAdapterExtension, type AdapterExtensionFile, type AdapterMcpServer } from './adapter-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -11,6 +12,19 @@ export class AtomicRpcSpawnError extends Error {
     this.name = 'AtomicRpcSpawnError'
     this.code = opts?.code
     ;(this as any).cause = opts?.cause
+  }
+}
+
+/** The Atomic process exited; requests to it fail with this error from then on. */
+export class AtomicProcessExitError extends Error {
+  readonly exitCode: number | null
+  readonly signal: NodeJS.Signals | null
+
+  constructor(exitCode: number | null, signal: NodeJS.Signals | null) {
+    super(`Atomic process exited (code=${exitCode}, signal=${signal})`)
+    this.name = 'AtomicProcessExitError'
+    this.exitCode = exitCode
+    this.signal = signal
   }
 }
 
@@ -81,6 +95,13 @@ export type AtomicExtensionUiResponse =
 
 export type AtomicRpcEvent = Record<string, unknown>
 
+export const NO_PERSON_FOR_ASK_USER_QUESTION =
+  'No person is available to answer questions in this session: the ACP client is running headless. ' +
+  'Do not ask again. In your final reply, state the question you needed answered and the assumption you made or would need, then stop.'
+
+/** How long dispose waits for Atomic to exit before removing the extension anyway. */
+const DISPOSE_EXIT_WAIT_MS = 5_000
+
 /** Maximum wait for an auxiliary context-usage update. */
 export const SESSION_STATS_TIMEOUT_MS = 1_000
 
@@ -99,6 +120,15 @@ type SpawnParams = {
   atomicCommand?: string
   /** If set, Atomic will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /**
+   * MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension.
+   * Env and header values are literal: Atomic receives them through its environment.
+   */
+  mcpServers?: Record<string, AdapterMcpServer>
+  /** No person can answer questions: `ask_user_question` returns a clear "no person available" result. */
+  headless?: boolean
+  /** Extra Atomic arguments; defaults to ATOMIC_ACP_ATOMIC_ARGS plus the adapter's args after `--`. */
+  extraArgs?: string[]
 }
 
 export class AtomicRpcProcess {
@@ -110,9 +140,14 @@ export class AtomicRpcProcess {
   private eventHandlers: Array<(ev: AtomicRpcEvent) => void> = []
   private exitHandlers: Array<(err: Error) => void> = []
   private readonly preludeLines: string[] = []
+  private readonly adapterExtension: AdapterExtensionFile | undefined
+  private exitError: AtomicProcessExitError | undefined
+  private readonly exited: Promise<void>
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(child: ChildProcessWithoutNullStreams, adapterExtension?: AdapterExtensionFile) {
     this.child = child
+    this.adapterExtension = adapterExtension
+    this.exited = new Promise(resolve => child.once('exit', () => resolve()))
 
     let stdoutBuffer = ''
     child.stdout.setEncoding('utf8')
@@ -144,8 +179,9 @@ export class AtomicRpcProcess {
     })
 
     child.on('exit', (code, signal) => {
-      const err = new Error(`Atomic process exited (code=${code}, signal=${signal})`)
-      this.rejectPendingAndNotifyExit(err)
+      void this.adapterExtension?.dispose()
+      this.exitError = new AtomicProcessExitError(code, signal)
+      this.rejectPendingAndNotifyExit(this.exitError)
     })
 
     child.on('error', err => {
@@ -161,15 +197,36 @@ export class AtomicRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
+    let extraArgs: string[]
+    try {
+      extraArgs = params.extraArgs ?? parseAtomicExtraArgs(process.argv, process.env)
+    } catch (e) {
+      throw new AtomicRpcSpawnError(`Could not start Atomic: ${(e as Error).message}`, { cause: e })
+    }
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
+    const adapterExtension = writeAdapterExtension({
+      mcpServers: params.mcpServers,
+      ...(params.headless ? { askUserQuestionUnavailable: NO_PERSON_FOR_ASK_USER_QUESTION } : {})
+    })
+    if (adapterExtension) args.push('-e', adapterExtension.path)
+    args.push(...extraArgs)
 
     const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn
-    const child = start(cmd, args, {
-      cwd: params.cwd,
-      stdio: 'pipe',
-      env: process.env
-    }) as ChildProcessWithoutNullStreams
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = start(cmd, args, {
+        cwd: params.cwd,
+        stdio: 'pipe',
+        // Atomic enables Node's on-disk compile cache, which would keep a copy of the extension.
+        env: adapterExtension
+          ? { ...process.env, ...adapterExtension.env, NODE_DISABLE_COMPILE_CACHE: '1' }
+          : process.env
+      }) as ChildProcessWithoutNullStreams
+    } catch (e) {
+      await adapterExtension?.dispose()
+      throw e
+    }
 
     // Ensure spawn failures (e.g. ENOENT when Atomic isn't installed) are surfaced as a
     // deterministic error instead of later EPIPE/internal-error noise.
@@ -192,6 +249,7 @@ export class AtomicRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
+      await adapterExtension?.dispose()
       const code = typeof e?.code === 'string' ? e.code : undefined
       if (code === 'ENOENT') {
         throw new AtomicRpcSpawnError(
@@ -214,7 +272,7 @@ export class AtomicRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new AtomicRpcProcess(child)
+    const proc = new AtomicRpcProcess(child, adapterExtension)
 
     // Best-effort handshake.
     // Important: Atomic may emit a get_state response pointing at a sessionFile in a directory
@@ -233,6 +291,11 @@ export class AtomicRpcProcess {
     }
 
     return proc
+  }
+
+  /** Whether the Atomic process has exited. A session whose Atomic exited needs a new process. */
+  get hasExited(): boolean {
+    return this.exitError !== undefined
   }
 
   onEvent(handler: (ev: AtomicRpcEvent) => void): () => void {
@@ -255,13 +318,30 @@ export class AtomicRpcProcess {
     for (const h of this.exitHandlers) h(err)
   }
 
-  dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
-    if (this.child.killed) return
-    try {
-      this.child.kill(signal as any)
-    } catch {
-      // ignore
+  /**
+   * Stop Atomic. Resolves once it has exited (or after a bounded wait) and its extension is removed;
+   * never rejects. Windows keeps the extension's directory busy while Atomic still runs.
+   */
+  async dispose(signal: NodeJS.Signals | number = 'SIGTERM'): Promise<void> {
+    if (!this.hasExited && !this.child.killed) {
+      try {
+        this.child.kill(signal as any)
+      } catch {
+        // ignore
+      }
     }
+    if (!this.hasExited) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        this.exited,
+        new Promise<void>(resolve => {
+          timer = setTimeout(resolve, DISPOSE_EXIT_WAIT_MS)
+          timer.unref?.()
+        })
+      ])
+      clearTimeout(timer)
+    }
+    await this.adapterExtension?.dispose()
   }
 
   /**
@@ -422,6 +502,7 @@ export class AtomicRpcProcess {
   }
 
   private request(cmd: AtomicRpcCommand, opts?: { timeoutMs?: number }): Promise<AtomicRpcResponse> {
+    if (this.exitError) return Promise.reject(this.exitError)
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
     const timeoutMs = opts?.timeoutMs

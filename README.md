@@ -104,6 +104,7 @@ Sessions
 - Threads get a title from your first message. Renaming in Atomic updates the title in the editor.
 - Deleting a thread in the editor deletes the Atomic session file.
 - Sessions survive an adapter restart. The next message restores the saved session.
+- If a session's Atomic process exits during a message, the message fails with an error saying how Atomic exited, and its open tool calls and workflow runs are marked failed. A message that fails never ends as a normal reply. The next message starts Atomic again on the same session, with the same MCP servers.
 
 Models and context
 
@@ -115,6 +116,15 @@ Commands and dialogs
 - Atomic prompt templates, skills (`/skill:name`), and extension commands such as `/workflow` show up in the slash command menu.
 - When an Atomic extension or workflow asks you to pick, confirm, or type something, the editor shows a form. Clients without form support get a permission prompt for pick and confirm questions.
 - Extension notifications show up in the thread.
+
+MCP servers
+
+- MCP servers the editor passes in `session/new` and `session/load` are given to that session's Atomic process. Stdio and streamable HTTP servers work; SSE servers are skipped with a warning on stderr, because Atomic doesn't support SSE.
+- Their tools are exposed directly as `mcp__<server>__<tool>`, so a prompt can name a tool and the model can call it without codemode or tool search.
+- `atomic-acp` doesn't write to `~/.atomic/agent/mcp.json` or `.atomic/mcp.json`. It registers the servers through a temporary Atomic extension in a private directory, deleted when the session's Atomic process exits or the adapter quits. Env and header values are never written to that file: they reach Atomic through its environment and are used exactly as the editor sent them, with no `${VAR}` or `!command` expansion. Node's compile cache is turned off for that Atomic process so it keeps no copy of the extension. Server names are reduced to letters, digits, `_` and `-`.
+- `session/new` and `session/load` fail with invalid params for a server Atomic can't use safely: an HTTP header name that isn't a valid token, a header value with a CR, LF or NUL, a URL containing `${` or `$env:` (Atomic would fill in its own environment variables), or a stdio env value with a NUL. The error names the server and header, never the value.
+- If your own Atomic MCP configuration defines a server with the same name, your configuration wins, as it does for any extension-contributed server.
+- Loading a running session with a different set of servers restarts its Atomic process. A session restored by a prompt after an adapter restart has no editor MCP servers until the editor loads it again.
 
 Startup info
 
@@ -130,7 +140,11 @@ Atomic workflows run from the editor the same way they do in the terminal.
 /workflow status
 ```
 
-Workflows keep running in the background after the command returns, and you can keep chatting while they do. Progress notices, status lines, and the completion message stream into the thread as they happen. If a workflow stage needs your input, you'll get a form in the editor.
+A message that starts workflows, with `/workflow <name>` or through the agent's `workflow` tool, stays open until every run it started has completed, failed, been blocked or been cancelled. Each run shows up as a tool call with its stages and final result. When the runs end, the agent replies to Atomic's completion notice, and then the message finishes. Editors treat the end of a message as "the agent is done", so they don't report a workflow as finished while it is still running.
+
+- Stopping the message (cancel in the editor) also quits the runs it started. They stay resumable with `/workflow resume <runId>`.
+- If a run stops to wait for human input, the message stops waiting for that run and tells you. Reply in the thread and the agent can answer the prompt with its `workflow` tool.
+- Set `ATOMIC_ACP_WAIT_FOR_WORKFLOWS=0` to end the message as soon as the run starts, as before. Runs then continue in the background, and their notices stream into the thread.
 
 Two extra commands read the workflow history Atomic keeps for the current project:
 
@@ -161,10 +175,13 @@ Prompt templates load from `~/.atomic/agent/prompts/` and `<project>/.atomic/pro
 
 Set these in the `env` object of your agent server entry:
 
-| Variable                             | Default                            | Purpose                                                                           |
-| ------------------------------------ | ---------------------------------- | --------------------------------------------------------------------------------- |
-| `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.            |
-| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts. |
+| Variable                             | Default                            | Purpose                                                                                              |
+| ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.                               |
+| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts.                    |
+| `ATOMIC_ACP_WAIT_FOR_WORKFLOWS`      | `1`                                | Set to `0` to end a message without waiting for the workflow runs it started.                        |
+| `ATOMIC_ACP_HEADLESS`                | unset                              | Set to `1` when no person can answer questions. See [Headless clients](#headless-clients).           |
+| `ATOMIC_ACP_ATOMIC_ARGS`             | unset                              | JSON array of extra arguments for every Atomic process, for example `["--model", "openai/gpt-5.5"]`. |
 
 ```json
 {
@@ -182,13 +199,32 @@ Set these in the `env` object of your agent server entry:
 }
 ```
 
+### Headless clients
+
+Set `ATOMIC_ACP_HEADLESS=1` for clients that run Atomic without a person watching, such as automation. Questions then end at once instead of waiting:
+
+- `ask_user_question` returns a tool result saying no person is available, so the model states the question and its assumption in its reply and stops.
+- Extension dialogs (pick, confirm, text input) are cancelled, and the thread shows `No person is available to answer "<question>"`.
+- When a workflow stops for human input, `atomic-acp` quits that run (it stays resumable with `/workflow resume`) and says so in the thread.
+
+Without the variable, a dialog that the client rejects, for example because it can't show permission prompts, is cancelled with the same notice.
+
+### Extra Atomic arguments
+
+Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` starts, after the ones from `ATOMIC_ACP_ATOMIC_ARGS`:
+
+```json
+{ "command": "atomic-acp", "args": ["--", "--model", "openai/gpt-5.5", "-e", "/path/to/extension.ts"] }
+```
+
+Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--no-session`, `--continue`, `--resume`, `--fork`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
+
 Everything else comes from Atomic itself. Provider logins, models, skills, and extensions use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
 
 ## Limitations
 
-- `ask_user_question` isn't available over ACP because Atomic RPC mode can't carry its custom UI.
+- `ask_user_question` can't be answered over ACP because Atomic RPC mode can't carry its custom UI. Headless clients get a clear "no person is available" result instead.
 - The editor's file and terminal APIs aren't used. Atomic reads, writes, and runs commands locally, and the editor displays the results.
-- MCP servers configured in the editor are ignored. Configure MCP servers in Atomic instead.
 - If you send several messages while Atomic is busy, they are queued and sent one at a time.
 - Zed is the client this is tested against. Other ACP clients should work but may render some updates differently.
 
@@ -205,11 +241,13 @@ npm run format
 
 The ACP side lives in `src/acp/`, and the wrapper around the Atomic subprocess lives in `src/atomic-rpc/`.
 
-Two smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
+These smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
 
 ```bash
 npm run build
 npm run smoke:e2e:atomic          # one prompt, checks streamed text and end_turn
+npm run smoke:mcp                 # an editor MCP server's tool is called through ACP
+npm run smoke:workflow-wait       # /workflow sleepy keeps the message open until the run ends; killing Atomic mid-run fails the message and the next one restarts it
 node scripts/smoke-workflow.mjs   # runs /workflow list over ACP
 ```
 

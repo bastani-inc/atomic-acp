@@ -59,7 +59,10 @@ export class FakeAtomicRpcProcess {
     }
   }
 
+  hasExited = false
+
   exit(err = new Error('Atomic process exited')) {
+    this.hasExited = true
     for (const h of this.exitHandlers) h(err)
   }
 
