@@ -2,7 +2,9 @@
 // `echo_marker` and an HTTP MCP server, asks the model to call `echo_marker`, and checks that the
 // server received the call. Env and header values, including `${...}` and `!command` text, must
 // reach the servers unchanged, and no copy of the secret ones may remain on disk after exit
-// (temp dir, Node's compile cache).
+// (temp dir, Node's compile cache). Servers Atomic can't use safely are refused at session/new:
+// a header value with a newline (Atomic's error would echo it) and a URL with an env reference
+// (Atomic would fill in the host's variable).
 // Needs `npm run build` and an Atomic provider login; skips when Atomic has no usable model.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -30,9 +32,13 @@ const literalEnv = {
   ECHO_MARKER_ENV_COMMAND: '!echo smoke-command-ran'
 }
 const literalHeaders = { authorization: `Bearer ${headerSecret}`, 'x-literal': '!echo header-command-ran ${HOME}' }
+const leakSecret = `mcp-leak-secret-${random()}`
+const urlHostSecret = `mcp-url-host-secret-${random()}`
+const httpUrls = []
 
 const httpRequests = []
 const httpServer = createServer((req, res) => {
+  httpUrls.push(req.url)
   httpRequests.push({ authorization: req.headers.authorization, 'x-literal': req.headers['x-literal'] })
   let raw = ''
   req.on('data', chunk => (raw += chunk))
@@ -67,7 +73,7 @@ const httpUrl = `http://127.0.0.1:${httpServer.address().port}/mcp`
 
 const child = spawn(process.execPath, [entrypoint], {
   cwd: workspace,
-  env: { ...process.env, TMPDIR: smokeTmp, TMP: smokeTmp, TEMP: smokeTmp },
+  env: { ...process.env, TMPDIR: smokeTmp, TMP: smokeTmp, TEMP: smokeTmp, ACP_URL_SECRET: urlHostSecret },
   stdio: ['pipe', 'pipe', 'pipe'],
   detached: process.platform !== 'win32'
 })
@@ -77,6 +83,7 @@ let nextId = 0
 let buffer = ''
 let stderr = ''
 let text = ''
+let stdout = ''
 
 function failPending(error) {
   for (const { reject } of pending.values()) reject(error)
@@ -97,6 +104,7 @@ child.stdout.on('data', chunk => {
   const lines = buffer.split('\n')
   buffer = lines.pop() ?? ''
   for (const line of lines) {
+    stdout += line + '\n'
     if (!line.trim()) continue
     const message = JSON.parse(line)
     if (message.id !== undefined && pending.has(message.id)) {
@@ -148,6 +156,28 @@ let skipped = false
 try {
   const init = await request('initialize', { protocolVersion: 1, clientCapabilities: {} })
   assert.equal(init.agentCapabilities.mcpCapabilities.http, true)
+
+  const refused = [
+    {
+      type: 'http',
+      name: 'header-leak',
+      url: httpUrl,
+      headers: [{ name: 'Authorization', value: `Bearer ${leakSecret}\ninvalid` }]
+    },
+    { type: 'http', name: 'url-env', url: `${httpUrl}?token=\${ACP_URL_SECRET}`, headers: [] },
+    { type: 'http', name: 'url-env-ps', url: `${httpUrl}?token=$env:ACP_URL_SECRET`, headers: [] }
+  ]
+  for (const server of refused) {
+    await assert.rejects(request('session/new', { cwd: workspace, mcpServers: [server] }), error => {
+      assert.equal(error.code, -32602, `session/new with ${server.name} must fail with invalidParams`)
+      return true
+    })
+  }
+  assert.ok(!stdout.includes(leakSecret), 'A refused header value must never reach the client')
+  assert.ok(!stderr.includes(leakSecret), 'A refused header value must never reach stderr')
+  assert.ok(!httpUrls.some(url => url.includes(urlHostSecret)), 'The host value of a URL variable reached the server')
+  assert.deepEqual(httpUrls, [], 'Atomic must not contact a refused server')
+  console.log('MCP smoke passed: a newline header and env-referencing URLs were refused at session/new')
 
   let session
   try {

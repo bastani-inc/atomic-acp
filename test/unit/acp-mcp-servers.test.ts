@@ -109,3 +109,53 @@ test('toAtomicMcpServers: normalizes names to Atomic server names and keeps them
   assert.equal(new Set(namespaces).size, names.length)
   assert.ok(!names.includes('__proto__'))
 })
+
+function refusal(servers: McpServer[]): { code?: number; message: string } {
+  try {
+    toAtomicMcpServers(servers)
+  } catch (error) {
+    return error as { code?: number; message: string }
+  }
+  assert.fail('expected the MCP servers to be refused')
+}
+
+test('toAtomicMcpServers: refuses header names and values that could break the request, naming only the header', () => {
+  const http = (headers: Array<{ name: string; value: string }>): McpServer => ({
+    type: 'http',
+    name: 'docs',
+    url: 'https://example.com/mcp',
+    headers
+  })
+  for (const value of ['Bearer tok-91\ninvalid', 'Bearer tok-91\r', 'Bearer tok-91\0']) {
+    const error = refusal([http([{ name: 'Authorization', value }])])
+    assert.equal(error.code, -32602)
+    assert.match(error.message, /"docs"/)
+    assert.match(error.message, /Authorization/)
+    assert.doesNotMatch(error.message, /tok-91/)
+  }
+  for (const name of ['X Key', 'X-Key:', 'X-Key\nInjected', '', 'Ké']) {
+    const error = refusal([http([{ name, value: 'tok-91' }])])
+    assert.equal(error.code, -32602)
+    assert.match(error.message, /"docs"/)
+    assert.doesNotMatch(error.message, /tok-91/)
+  }
+})
+
+test('toAtomicMcpServers: refuses URLs that Atomic would expand from its environment', () => {
+  for (const url of ['https://example.com/mcp?token=${SECRET}', 'https://example.com/$ENV:SECRET/mcp']) {
+    const error = refusal([{ type: 'http', name: 'docs', url, headers: [] }])
+    assert.equal(error.code, -32602)
+    assert.match(error.message, /"docs"/)
+  }
+  assert.doesNotThrow(() =>
+    toAtomicMcpServers([{ type: 'http', name: 'docs', url: 'https://example.com/mcp?price=$5', headers: [] }])
+  )
+})
+
+test('toAtomicMcpServers: refuses stdio env values with NUL, which no process environment can hold', () => {
+  const error = refusal([{ name: 'tools', command: 'tool', args: [], env: [{ name: 'TOKEN', value: 'tok-91\0' }] }])
+  assert.equal(error.code, -32602)
+  assert.match(error.message, /"tools"/)
+  assert.match(error.message, /TOKEN/)
+  assert.doesNotMatch(error.message, /tok-91/)
+})

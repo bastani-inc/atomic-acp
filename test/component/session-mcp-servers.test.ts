@@ -80,3 +80,42 @@ test('session/load restarts a running session whose MCP servers changed and reus
   assert.equal(spawns.length, 2)
   assert.deepEqual(spawns[1]?.mcpServers, expectedAtomicServers)
 })
+
+const leakyHeaderServer: McpServer = {
+  type: 'http',
+  name: 'leaky',
+  url: 'https://example.com/mcp',
+  headers: [{ name: 'Authorization', value: 'Bearer tok-91\ninvalid' }]
+}
+
+const expandingUrlServer: McpServer = {
+  type: 'http',
+  name: 'expanding',
+  url: 'https://example.com/mcp?token=${ACP_URL_SECRET}',
+  headers: []
+}
+
+test('session/new refuses unusable MCP servers with invalidParams before starting Atomic', async t => {
+  const { root, agent, spawns } = fixture(t)
+  for (const server of [leakyHeaderServer, expandingUrlServer]) {
+    await assert.rejects(agent.newSession({ cwd: root, mcpServers: [server] }), (error: Error & { code?: number }) => {
+      assert.equal(error.code, -32602)
+      assert.doesNotMatch(error.message, /tok-91/)
+      return true
+    })
+  }
+  assert.equal(spawns.length, 0)
+})
+
+test('session/load refuses unusable MCP servers and keeps the running session', async t => {
+  const { root, agent, spawns } = fixture(t)
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  for (const server of [leakyHeaderServer, expandingUrlServer]) {
+    await assert.rejects(
+      agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [server] }),
+      (error: Error & { code?: number }) => error.code === -32602
+    )
+  }
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  assert.equal(spawns.length, 1, 'a refused load must not restart the running session')
+})
