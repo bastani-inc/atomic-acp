@@ -132,7 +132,9 @@ test('AtomicAcpSession: emits tool locations from Atomic path args', async () =>
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
-  assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: `${process.cwd()}/src/acp/session.ts` }])
+  assert.deepEqual((conn.updates[0]!.update as any).locations, [
+    { path: join(process.cwd(), 'src', 'acp', 'session.ts') }
+  ])
 })
 
 test('AtomicAcpSession: emits agent_message_chunk for auto_retry_start with attempt/maxAttempts and rounded delay', async () => {
