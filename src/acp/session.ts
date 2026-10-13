@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import {
   AtomicRpcProcess,
+  AtomicProcessExitError,
   AtomicRpcSpawnError,
   type AtomicExtensionUiResponse,
   type AtomicRpcEvent,
@@ -51,7 +52,13 @@ type SessionCreateParams = {
   headless?: boolean
 }
 
-export type StopReason = 'end_turn' | 'cancelled' | 'error'
+export type StopReason = 'end_turn' | 'cancelled'
+
+function atomicExitReason(err: Error): string {
+  return err instanceof AtomicProcessExitError
+    ? `Atomic exited (code=${err.exitCode}, signal=${err.signal})`
+    : `Atomic exited: ${err.message}`
+}
 
 type TurnWorkflowRun = {
   name: string
@@ -280,6 +287,9 @@ export class AtomicAcpSession {
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  // Set once Atomic exits; every later prompt to this process fails with it.
+  private atomicExit: Error | null = null
+
   private pendingExtensionDialogs = new Map<string, () => Promise<void>>()
   private readonly workflowRunNames = new Map<string, string>()
 
@@ -427,10 +437,6 @@ export class AtomicAcpSession {
 
     // A turn that was only waiting for workflows has no Atomic turn left to settle.
     if (this.pendingTurn && this.waitingForWorkflows && !this.inAgentLoop) await this.settleTurn()
-  }
-
-  wasCancelRequested(): boolean {
-    return this.cancelRequested
   }
 
   async setSessionName(name: string): Promise<void> {
@@ -599,15 +605,15 @@ export class AtomicAcpSession {
     await this.flushEmits()
     if (!this.pendingTurn && this.turnQueue.length === 0) return
 
-    const authErr = maybeAuthRequiredError(err)
+    // A failed prompt is never a successful turn: it ends with a JSON-RPC error unless cancelled.
+    const failure = maybeAuthRequiredError(err) ?? (this.cancelRequested ? null : this.promptFailure(err))
     const queued = this.turnQueue.splice(0)
-    if (authErr) {
-      this.pendingTurn?.reject(authErr)
-      for (const queuedTurn of queued) queuedTurn.reject(authErr)
+    if (failure) {
+      this.pendingTurn?.reject(failure)
+      for (const queuedTurn of queued) queuedTurn.reject(failure)
     } else {
-      const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-      this.pendingTurn?.resolve(reason)
-      for (const queuedTurn of queued) queuedTurn.resolve(reason)
+      this.pendingTurn?.resolve('cancelled')
+      for (const queuedTurn of queued) queuedTurn.resolve('cancelled')
     }
 
     this.pendingTurn = null
@@ -622,7 +628,49 @@ export class AtomicAcpSession {
     })
   }
 
+  private promptFailure(err: unknown): RequestError {
+    if (this.atomicExit) {
+      const exit = this.atomicExit
+      const data = exit instanceof AtomicProcessExitError ? { exitCode: exit.exitCode, signal: exit.signal } : undefined
+      return RequestError.internalError(
+        data,
+        `${atomicExitReason(exit)} during the prompt. Send another prompt to restart it.`
+      )
+    }
+    if (err instanceof RequestError) return err
+    return RequestError.internalError(undefined, err instanceof Error ? err.message : String(err))
+  }
+
+  /** Close every tool call and workflow run still open, so none is left in progress after Atomic dies. */
+  private failOpenToolCalls(reason: string): void {
+    for (const toolCallId of this.currentToolCalls.keys()) {
+      const bash = this.bashToolCallIds.has(toolCallId)
+      this.emit({
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        status: 'failed',
+        // A bash call keeps its terminal; other calls show the reason.
+        ...(bash ? {} : { content: [{ type: 'content', content: { type: 'text', text: reason } }] }),
+        rawOutput: { error: reason }
+      })
+    }
+    this.currentToolCalls.clear()
+    this.bashToolCallIds.clear()
+    this.bashOutputSnapshots.clear()
+    this.fileSnapshots.clear()
+    this.fileMutationToolCallIds.clear()
+    for (const [runId, run] of this.turnWorkflowRuns) {
+      if (run.done) continue
+      run.done = true
+      run.status = 'failed'
+      run.lines.push(reason)
+      this.publishWorkflowRun(runId, run)
+    }
+  }
+
   private handleAtomicExit(err: Error): void {
+    this.atomicExit ??= err
+    this.failOpenToolCalls(atomicExitReason(err))
     void this.cancelPendingExtensionDialogs()
 
     if (!this.pendingTurn && this.turnQueue.length === 0) return

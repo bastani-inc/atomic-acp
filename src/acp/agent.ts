@@ -32,8 +32,7 @@ import {
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
-  type SetSessionModeResponse,
-  type StopReason
+  type SetSessionModeResponse
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type AtomicAcpSession } from './session.js'
@@ -203,9 +202,12 @@ export class AtomicAcpAgent implements ACPAgent {
     if (existing) {
       if (opts?.cwd && existing.cwd !== opts.cwd) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
       // MCP servers are fixed when Atomic starts, so a load with different servers needs a new process.
-      if (!opts?.mcpServers || sameMcpServers(existing.mcpServers, opts.mcpServers)) return existing
+      // A session whose Atomic exited restarts from its session file with the same servers.
+      const sameServers = !opts?.mcpServers || sameMcpServers(existing.mcpServers, opts.mcpServers)
+      if (sameServers && !existing.proc.hasExited) return existing
       this.sessions.close(sessionId)
     }
+    const mcpServers = opts?.mcpServers ?? existing?.mcpServers
     const stored = this.findStoredSession(sessionId, opts?.cwd)
     if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
     const cwd = opts?.cwd ?? stored.cwd
@@ -215,7 +217,7 @@ export class AtomicAcpAgent implements ACPAgent {
         cwd,
         sessionPath: stored.sessionFile,
         atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
-        mcpServers: atomicMcpServersForSpawn(opts?.mcpServers),
+        mcpServers: atomicMcpServersForSpawn(mcpServers),
         headless: isHeadlessFromEnv()
       })
     } catch (error) {
@@ -225,7 +227,7 @@ export class AtomicAcpAgent implements ACPAgent {
     try {
       const session = this.sessions.getOrCreate(sessionId, {
         cwd,
-        mcpServers: opts?.mcpServers ?? [],
+        mcpServers: mcpServers ?? [],
         conn: this.conn,
         proc,
         fileCommands: loadSlashCommands(cwd),
@@ -928,13 +930,8 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images, promptToSessionTitle(params.prompt) ?? undefined)
-
-    // ACP StopReason does not include "error"; if Atomic fails we map to end_turn for now,
-    // unless we know this was a cancellation.
-    const stopReason: StopReason =
-      result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
-
+    // A prompt that fails, including because Atomic exited, rejects with a JSON-RPC error.
+    const stopReason = await session.prompt(message, images, promptToSessionTitle(params.prompt) ?? undefined)
     return { stopReason }
   }
 

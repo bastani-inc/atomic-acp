@@ -43,7 +43,7 @@ test('AtomicAcpSession: cancel clears queued prompts', async () => {
   assert.equal(proc.prompts.length, 1)
 })
 
-test('AtomicAcpSession: Atomic exit resolves active and queued prompts', async () => {
+test('AtomicAcpSession: Atomic exit fails active and queued prompts', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
 
@@ -62,8 +62,8 @@ test('AtomicAcpSession: Atomic exit resolves active and queued prompts', async (
   assert.equal(proc.prompts.length, 1)
   proc.exit(new Error('crash after prompt accepted'))
 
-  assert.equal(await first, 'error')
-  assert.equal(await second, 'error')
+  await assert.rejects(first, /Atomic exited/)
+  await assert.rejects(second, /Atomic exited/)
   assert.equal(proc.prompts.length, 1)
 })
 

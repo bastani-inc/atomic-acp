@@ -15,6 +15,19 @@ export class AtomicRpcSpawnError extends Error {
   }
 }
 
+/** The Atomic process exited; requests to it fail with this error from then on. */
+export class AtomicProcessExitError extends Error {
+  readonly exitCode: number | null
+  readonly signal: NodeJS.Signals | null
+
+  constructor(exitCode: number | null, signal: NodeJS.Signals | null) {
+    super(`Atomic process exited (code=${exitCode}, signal=${signal})`)
+    this.name = 'AtomicProcessExitError'
+    this.exitCode = exitCode
+    this.signal = signal
+  }
+}
+
 const ESC = String.fromCharCode(0x1b)
 const CSI = String.fromCharCode(0x9b)
 
@@ -125,6 +138,7 @@ export class AtomicRpcProcess {
   private exitHandlers: Array<(err: Error) => void> = []
   private readonly preludeLines: string[] = []
   private readonly adapterExtension: AdapterExtensionFile | undefined
+  private exitError: AtomicProcessExitError | undefined
 
   private constructor(child: ChildProcessWithoutNullStreams, adapterExtension?: AdapterExtensionFile) {
     this.child = child
@@ -161,8 +175,8 @@ export class AtomicRpcProcess {
 
     child.on('exit', (code, signal) => {
       this.adapterExtension?.dispose()
-      const err = new Error(`Atomic process exited (code=${code}, signal=${signal})`)
-      this.rejectPendingAndNotifyExit(err)
+      this.exitError = new AtomicProcessExitError(code, signal)
+      this.rejectPendingAndNotifyExit(this.exitError)
     })
 
     child.on('error', err => {
@@ -272,6 +286,11 @@ export class AtomicRpcProcess {
     }
 
     return proc
+  }
+
+  /** Whether the Atomic process has exited. A session whose Atomic exited needs a new process. */
+  get hasExited(): boolean {
+    return this.exitError !== undefined
   }
 
   onEvent(handler: (ev: AtomicRpcEvent) => void): () => void {
@@ -462,6 +481,7 @@ export class AtomicRpcProcess {
   }
 
   private request(cmd: AtomicRpcCommand, opts?: { timeoutMs?: number }): Promise<AtomicRpcResponse> {
+    if (this.exitError) return Promise.reject(this.exitError)
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
     const timeoutMs = opts?.timeoutMs

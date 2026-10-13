@@ -104,6 +104,7 @@ Sessions
 - Threads get a title from your first message. Renaming in Atomic updates the title in the editor.
 - Deleting a thread in the editor deletes the Atomic session file.
 - Sessions survive an adapter restart. The next message restores the saved session.
+- If a session's Atomic process exits during a message, the message fails with an error saying how Atomic exited, and its open tool calls and workflow runs are marked failed. A message that fails never ends as a normal reply. The next message starts Atomic again on the same session, with the same MCP servers.
 
 Models and context
 
@@ -246,7 +247,7 @@ These smoke scripts exercise a real Atomic install. They need a provider login a
 npm run build
 npm run smoke:e2e:atomic          # one prompt, checks streamed text and end_turn
 npm run smoke:mcp                 # an editor MCP server's tool is called through ACP
-npm run smoke:workflow-wait       # /workflow sleepy keeps the message open until the run ends
+npm run smoke:workflow-wait       # /workflow sleepy keeps the message open until the run ends; killing Atomic mid-run fails the message and the next one restarts it
 node scripts/smoke-workflow.mjs   # runs /workflow list over ACP
 ```
 

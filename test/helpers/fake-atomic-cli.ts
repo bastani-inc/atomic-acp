@@ -26,9 +26,10 @@ export type FakeAtomicReport = {
 /**
  * Write a fake `atomic --mode rpc` that loads every `-e` extension with a stub extension API,
  * probes its `tool_call` handlers and records what it saw, so tests observe what real Atomic
- * would receive. Returns the launcher path to use as `atomicCommand`.
+ * would receive. A `prompt` command is answered as started and followed by `promptEvents`.
+ * Returns the launcher path to use as `atomicCommand`.
  */
-export function writeFakeAtomicCli(root: string): string {
+export function writeFakeAtomicCli(root: string, opts: { promptEvents?: object[] } = {}): string {
   const report = join(root, 'report.json')
   writeFileSync(
     join(root, 'fake-atomic.mjs'),
@@ -64,7 +65,9 @@ export function writeFakeAtomicCli(root: string): string {
       `writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, args, modes, registered, resolved, sources, disableCompileCache, toolCallResults }))`,
       'createInterface({ input: process.stdin }).on("line", line => {',
       '  const command = JSON.parse(line)',
-      '  process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data: {} }) + "\\n")',
+      '  const data = command.type === "prompt" ? { disposition: "started" } : {}',
+      '  process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data }) + "\\n")',
+      `  if (command.type === "prompt") for (const event of ${JSON.stringify(opts.promptEvents ?? [])}) process.stdout.write(JSON.stringify(event) + "\\n")`,
       '})'
     ].join('\n')
   )
