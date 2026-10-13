@@ -302,6 +302,13 @@ export function mapCreateElicitationResponseToAtomicQuestionnaireResult(
   return { answers, cancelled: false }
 }
 
+export function createFormElicitation(
+  conn: Pick<AgentSideConnection, 'unstable_createElicitation'>,
+  request: CreateElicitationRequest
+): Promise<CreateElicitationResponse> {
+  return conn.unstable_createElicitation(request)
+}
+
 export async function createAtomicQuestionElicitation(params: {
   conn: Pick<AgentSideConnection, 'unstable_createElicitation'>
   sessionId: string
@@ -309,7 +316,8 @@ export async function createAtomicQuestionElicitation(params: {
   questions: AtomicQuestion[]
 }): Promise<AtomicQuestionElicitationResponse> {
   try {
-    const response = await params.conn.unstable_createElicitation(
+    const response = await createFormElicitation(
+      params.conn,
       buildAtomicQuestionElicitationRequest({
         sessionId: params.sessionId,
         atomicRequestId: params.atomicRequestId,

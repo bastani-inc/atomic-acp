@@ -1,4 +1,14 @@
 import {
+  bashCommand,
+  bashExitCode,
+  bashResultText,
+  bashTerminalContent,
+  bashTerminalExitMeta,
+  bashTerminalInfoMeta,
+  bashTerminalOutputMeta,
+  isBashTool
+} from './translate/bash.js'
+import {
   RequestError,
   type Agent as ACPAgent,
   type AgentSideConnection,
@@ -979,6 +989,35 @@ export class AtomicAcpAgent implements ACPAgent {
         const toolCallId = String((m as any)?.toolCallId ?? crypto.randomUUID())
         const isError = Boolean((m as any)?.isError)
 
+        if (isBashTool(toolName)) {
+          const text = bashResultText(m)
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId,
+              title: bashCommand(m) ?? toolName,
+              kind: 'execute',
+              status: 'in_progress',
+              content: bashTerminalContent(toolCallId),
+              _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
+            }
+          })
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId,
+              status: isError ? 'failed' : 'completed',
+              _meta: {
+                ...(text ? bashTerminalOutputMeta(toolCallId, text) : {}),
+                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
+              }
+            }
+          })
+          continue
+        }
+
         // Create a synthetic ACP tool call to render historic tool usage.
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1430,22 +1469,18 @@ function buildStartupInfo(opts: {
     // ignore
   }
 
-  // Also show npm packages from Atomic settings (best-effort)
-  try {
-    const settingsPath = join(agentDir, 'settings.json')
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as any
-    const pkgs: string[] = Array.isArray(settings?.packages) ? settings.packages : []
-    for (const pkg of pkgs) {
-      const s = String(pkg)
-      if (s.startsWith('npm:')) {
-        // Render a two-line bullet structure using markdown indentation.
-        extItems.push(`${s}\n  - index.ts`)
-      } else {
-        extItems.push(s)
+  for (const settingsPath of [join(agentDir, 'settings.json'), join(opts.cwd, '.atomic', 'settings.json')]) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { packages?: unknown }
+      const packages: unknown[] = Array.isArray(settings.packages) ? settings.packages : []
+      for (const pkg of packages) {
+        const source = typeof pkg === 'string' ? pkg : (pkg as { source?: unknown } | null)?.source
+        if (typeof source !== 'string') continue
+        extItems.push(source.startsWith('npm:') ? `${source}\n  - index.ts` : source)
       }
+    } catch {
+      // Ignore missing or invalid settings.
     }
-  } catch {
-    // ignore
   }
 
   addSection('Extensions', extItems)

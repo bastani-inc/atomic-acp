@@ -96,6 +96,9 @@ test('AtomicAcpSession: emits tool_call + tool_call_update + completes', async (
   assert.equal((conn.updates[0]!.update as any).toolCallId, 't1')
   assert.equal((conn.updates[0]!.update as any).status, 'in_progress')
   assert.equal((conn.updates[0]!.update as any).locations, undefined)
+  assert.equal((conn.updates[0]!.update as { title?: string }).title, 'ls')
+  assert.deepEqual((conn.updates[0]!.update as { content?: unknown }).content, [{ type: 'terminal', terminalId: 't1' }])
+  assert.deepEqual(conn.updates[0]!.update._meta, { terminal_info: { terminal_id: 't1', cwd: process.cwd() } })
 
   assert.equal(conn.updates[1]!.update.sessionUpdate, 'tool_call_update')
   assert.equal((conn.updates[1]!.update as any).toolCallId, 't1')
@@ -104,6 +107,10 @@ test('AtomicAcpSession: emits tool_call + tool_call_update + completes', async (
   assert.equal(conn.updates[2]!.update.sessionUpdate, 'tool_call_update')
   assert.equal((conn.updates[2]!.update as any).toolCallId, 't1')
   assert.equal((conn.updates[2]!.update as any).status, 'completed')
+  assert.deepEqual(conn.updates[2]!.update._meta, {
+    terminal_output: { terminal_id: 't1', data: 'done' },
+    terminal_exit: { terminal_id: 't1', exit_code: 0, signal: null }
+  })
 })
 
 test('AtomicAcpSession: emits tool locations from Atomic path args', async () => {

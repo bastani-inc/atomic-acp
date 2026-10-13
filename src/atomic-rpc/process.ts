@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import crossSpawn from 'cross-spawn'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from './command.js'
 
 export class AtomicRpcSpawnError extends Error {
@@ -67,6 +68,8 @@ type AtomicRpcResponse = {
 }
 
 export type AtomicExtensionUiResponse =
+  | { type: 'extension_ui_response'; id: string; value: string }
+  | { type: 'extension_ui_response'; id: string; confirmed: boolean }
   | {
       type: 'extension_ui_response'
       id: string
@@ -157,12 +160,12 @@ export class AtomicRpcProcess {
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
-    const child = spawn(cmd, args, {
+    const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn
+    const child = start(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: process.env,
-      shell: shouldUseShellForAtomicCommand(cmd)
-    })
+      env: process.env
+    }) as ChildProcessWithoutNullStreams
 
     // Ensure spawn failures (e.g. ENOENT when Atomic isn't installed) are surfaced as a
     // deterministic error instead of later EPIPE/internal-error noise.
