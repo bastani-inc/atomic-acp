@@ -44,6 +44,7 @@
     "smoke": "node scripts/smoke-acp.mjs",
     "smoke:e2e:atomic": "node scripts/smoke-e2e-atomic.mjs",
     "smoke:mcp": "node scripts/smoke-mcp-servers.mjs",
+    "smoke:workflow-wait": "node scripts/smoke-workflow-wait.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
   },

@@ -53,6 +53,22 @@ type SessionCreateParams = {
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
 
+type TurnWorkflowRun = {
+  name: string
+  done: boolean
+  status?: string
+  lines: string[]
+  stageNames: Map<string, string>
+  resultReported: boolean
+}
+
+/** How long a finished workflow wait gives Atomic to start the follow-up turn on its notice. */
+const WORKFLOW_FOLLOW_UP_GRACE_MS = 3_000
+
+function waitForWorkflowsFromEnv(): boolean {
+  return !/^(0|false|no)$/i.test(process.env.ATOMIC_ACP_WAIT_FOR_WORKFLOWS?.trim() ?? '')
+}
+
 type PendingTurn = {
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
@@ -266,6 +282,13 @@ export class AtomicAcpSession {
 
   private pendingExtensionDialogs = new Map<string, () => Promise<void>>()
   private readonly workflowRunNames = new Map<string, string>()
+
+  // Workflow runs started during the current prompt turn. The turn stays open until they end.
+  private readonly waitForWorkflows: boolean
+  private readonly workflowFollowUpGraceMs: number
+  private readonly turnWorkflowRuns = new Map<string, TurnWorkflowRun>()
+  private waitingForWorkflows = false
+  private workflowGraceTimer: ReturnType<typeof setTimeout> | undefined
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -277,6 +300,9 @@ export class AtomicAcpSession {
     autoTitle?: boolean
     /** No person can answer questions, so extension dialogs are cancelled at once with a notice. */
     headless?: boolean
+    /** Keep a prompt turn open until the workflow runs it started end (default: ATOMIC_ACP_WAIT_FOR_WORKFLOWS != 0). */
+    waitForWorkflows?: boolean
+    workflowFollowUpGraceMs?: number
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -285,6 +311,8 @@ export class AtomicAcpSession {
     this.conn = opts.conn
     this.clientElicitationSupport = opts.clientElicitationSupport ?? NO_CLIENT_ELICITATION_SUPPORT
     this.headless = opts.headless ?? false
+    this.waitForWorkflows = opts.waitForWorkflows ?? waitForWorkflowsFromEnv()
+    this.workflowFollowUpGraceMs = opts.workflowFollowUpGraceMs ?? WORKFLOW_FOLLOW_UP_GRACE_MS
     this.fileCommands = opts.fileCommands ?? []
 
     this.initialTitlePending = opts.autoTitle ?? false
@@ -382,8 +410,23 @@ export class AtomicAcpSession {
 
     await this.cancelPendingExtensionDialogs()
 
+    for (const [runId, run] of this.turnWorkflowRuns) {
+      if (run.done) continue
+      run.done = true
+      run.status = 'cancelled'
+      run.lines.push('run cancelled')
+      this.publishWorkflowRun(runId, run)
+      this.emitAgentText(`Quitting workflow "${run.name}" (run ${runId}).`)
+      void this.proc.prompt(`/workflow quit ${runId}`, [], 'followUp').catch(() => {
+        this.emitAgentText(`Could not quit workflow run ${runId}.`)
+      })
+    }
+
     // Abort the currently running turn (if any). If nothing is running, this is a no-op.
     await this.proc.abort()
+
+    // A turn that was only waiting for workflows has no Atomic turn left to settle.
+    if (this.pendingTurn && this.waitingForWorkflows && !this.inAgentLoop) await this.settleTurn()
   }
 
   wasCancelRequested(): boolean {
@@ -508,6 +551,7 @@ export class AtomicAcpSession {
 
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
+    this.resetWorkflowWait()
     // Independent workflow runs may still be streaming when a new prompt arrives.
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
@@ -527,6 +571,10 @@ export class AtomicAcpSession {
       .then(async disposition => {
         if (disposition !== 'handled' || this.pendingTurn !== pending) return
         if (this.inAgentLoop) this.backgroundTurn = true
+        if (this.shouldWaitForWorkflows()) {
+          this.beginWorkflowWait()
+          return
+        }
         await this.publishContextUsage()
         if (this.pendingTurn !== pending) return
         pending.resolve(this.cancelRequested ? 'cancelled' : 'end_turn')
@@ -564,6 +612,7 @@ export class AtomicAcpSession {
 
     this.pendingTurn = null
     this.inAgentLoop = false
+    this.resetWorkflowWait()
 
     // If the prompt failed, do not automatically proceed—Atomic may be unhealthy.
     // Drain any queued requests so no client request is left hanging.
@@ -657,8 +706,143 @@ export class AtomicAcpSession {
     await completion
   }
 
+  private async settleTurn(): Promise<void> {
+    this.resetWorkflowWait()
+    await this.cancelPendingExtensionDialogs()
+
+    // Ensure all updates derived from Atomic events are delivered before we resolve
+    // the ACP `session/prompt` request.
+    await this.publishContextUsage()
+
+    const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+    this.pendingTurn?.resolve(reason)
+    this.pendingTurn = null
+    this.inAgentLoop = false
+
+    // Start next queued prompt, if any.
+    const next = this.turnQueue.shift()
+    if (next) {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
+      })
+      this.startTurn(next)
+    } else {
+      this.emit({
+        sessionUpdate: 'session_info_update',
+        _meta: { atomicAcp: { queueDepth: 0, running: false } }
+      })
+    }
+  }
+
+  private shouldWaitForWorkflows(): boolean {
+    if (!this.waitForWorkflows || this.cancelRequested) return false
+    return [...this.turnWorkflowRuns.values()].some(run => !run.done)
+  }
+
+  private beginWorkflowWait(): void {
+    if (this.waitingForWorkflows) return
+    this.waitingForWorkflows = true
+    const open = [...this.turnWorkflowRuns].filter(([, run]) => !run.done)
+    const list = open.map(([runId, run]) => `"${run.name}" (run ${runId})`).join(', ')
+    this.emitAgentText(`Waiting for workflow ${list} to finish.`)
+  }
+
+  private clearWorkflowGraceTimer(): void {
+    if (this.workflowGraceTimer) clearTimeout(this.workflowGraceTimer)
+    this.workflowGraceTimer = undefined
+  }
+
+  private resetWorkflowWait(): void {
+    this.clearWorkflowGraceTimer()
+    this.turnWorkflowRuns.clear()
+    this.waitingForWorkflows = false
+  }
+
+  /** Once every run has ended, end the turn after Atomic's follow-up turn, or after a short grace without one. */
+  private maybeEndWorkflowWait(): void {
+    if (!this.waitingForWorkflows || !this.pendingTurn || this.shouldWaitForWorkflows()) return
+    if (this.inAgentLoop) return
+    this.clearWorkflowGraceTimer()
+    this.workflowGraceTimer = setTimeout(() => {
+      this.workflowGraceTimer = undefined
+      if (this.waitingForWorkflows && this.pendingTurn && !this.inAgentLoop) void this.settleTurn()
+    }, this.workflowFollowUpGraceMs)
+  }
+
+  private publishWorkflowRun(runId: string, run: TurnWorkflowRun): void {
+    const status = !run.done
+      ? 'in_progress'
+      : run.status === 'completed' || run.status === 'skipped'
+        ? 'completed'
+        : 'failed'
+    this.emit({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: `workflow-run-${runId}`,
+      status,
+      content: [{ type: 'content', content: { type: 'text', text: run.lines.join('\n') } }]
+    })
+  }
+
+  private trackWorkflowEvent(event: WorkflowEvent): void {
+    if (event.kind === 'run_start') {
+      if (!this.waitForWorkflows || !this.pendingTurn || this.turnWorkflowRuns.has(event.runId)) return
+      const name = event.name ?? this.workflowRunNames.get(event.runId) ?? 'workflow'
+      this.turnWorkflowRuns.set(event.runId, {
+        name,
+        done: false,
+        lines: [`run ${event.runId} started`],
+        stageNames: new Map(),
+        resultReported: false
+      })
+      this.emit({
+        sessionUpdate: 'tool_call',
+        toolCallId: `workflow-run-${event.runId}`,
+        title: `Workflow ${name}`,
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: { runId: event.runId, workflow: name }
+      })
+      return
+    }
+    const run = this.turnWorkflowRuns.get(event.runId)
+    if (!run) return
+    if (event.kind === 'stage_start') {
+      const stage = event.name ?? event.stageId ?? 'stage'
+      if (event.stageId) run.stageNames.set(event.stageId, stage)
+      run.lines.push(`stage ${stage} started`)
+      if (event.humanInput && !run.done) {
+        run.done = true
+        run.status = 'awaiting_input'
+        run.lines.push(`waiting for input at stage ${stage}`)
+        if (!this.headless) {
+          this.emitAgentText(
+            `Workflow "${run.name}" is waiting for input (stage ${stage}, run ${event.runId}). This turn won't wait for it; reply here to answer it.`
+          )
+        }
+      }
+    } else if (event.kind === 'stage_end') {
+      const stage = (event.stageId && run.stageNames.get(event.stageId)) ?? event.stageId ?? 'stage'
+      run.lines.push(`stage ${stage} ${event.status ?? 'ended'}`)
+    } else {
+      if (!run.done || run.status === 'awaiting_input') {
+        run.done = true
+        run.status = event.status
+        run.lines.push(`run ${event.status}`)
+      }
+      if (event.result !== undefined && !run.resultReported) {
+        run.resultReported = true
+        run.lines.push(`result: ${JSON.stringify(event.result)}`)
+      }
+      if (event.error) run.lines.push(`error: ${event.error}`)
+    }
+    this.publishWorkflowRun(event.runId, run)
+    this.maybeEndWorkflowWait()
+  }
+
   private handleWorkflowEvent(event: WorkflowEvent): void {
     if (event.kind === 'run_start' && event.name) this.workflowRunNames.set(event.runId, event.name)
+    this.trackWorkflowEvent(event)
     if (event.kind === 'stage_start' && event.humanInput && this.headless) {
       const name = this.workflowRunNames.get(event.runId) ?? event.runId
       this.emitAgentText(
@@ -962,6 +1146,7 @@ export class AtomicAcpSession {
       case 'agent_start': {
         this.inAgentLoop = true
         this.backgroundTurn = !this.pendingTurn
+        this.clearWorkflowGraceTimer()
         break
       }
 
@@ -980,35 +1165,15 @@ export class AtomicAcpSession {
         if (this.backgroundTurn || !this.pendingTurn) {
           this.backgroundTurn = false
           this.inAgentLoop = false
+          this.maybeEndWorkflowWait()
           break
         }
-        void (async () => {
-          await this.cancelPendingExtensionDialogs()
-
-          // Ensure all updates derived from Atomic events are delivered before we resolve
-          // the ACP `session/prompt` request.
-          await this.publishContextUsage()
-
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-          this.pendingTurn?.resolve(reason)
-          this.pendingTurn = null
+        if (this.shouldWaitForWorkflows()) {
           this.inAgentLoop = false
-
-          // Start next queued prompt, if any.
-          const next = this.turnQueue.shift()
-          if (next) {
-            this.emit({
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
-            })
-            this.startTurn(next)
-          } else {
-            this.emit({
-              sessionUpdate: 'session_info_update',
-              _meta: { atomicAcp: { queueDepth: 0, running: false } }
-            })
-          }
-        })()
+          this.beginWorkflowWait()
+          break
+        }
+        void this.settleTurn()
         break
       }
 

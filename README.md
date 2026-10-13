@@ -138,7 +138,11 @@ Atomic workflows run from the editor the same way they do in the terminal.
 /workflow status
 ```
 
-Workflows keep running in the background after the command returns, and you can keep chatting while they do. Progress notices, status lines, and the completion message stream into the thread as they happen. If a workflow stage needs your input, you'll get a form in the editor.
+A message that starts workflows, with `/workflow <name>` or through the agent's `workflow` tool, stays open until every run it started has completed, failed, been blocked or been cancelled. Each run shows up as a tool call with its stages and final result. When the runs end, the agent replies to Atomic's completion notice, and then the message finishes. Editors treat the end of a message as "the agent is done", so they don't report a workflow as finished while it is still running.
+
+- Stopping the message (cancel in the editor) also quits the runs it started. They stay resumable with `/workflow resume <runId>`.
+- If a run stops to wait for human input, the message stops waiting for that run and tells you. Reply in the thread and the agent can answer the prompt with its `workflow` tool.
+- Set `ATOMIC_ACP_WAIT_FOR_WORKFLOWS=0` to end the message as soon as the run starts, as before. Runs then continue in the background, and their notices stream into the thread.
 
 Two extra commands read the workflow history Atomic keeps for the current project:
 
@@ -173,6 +177,7 @@ Set these in the `env` object of your agent server entry:
 | ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.                               |
 | `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts.                    |
+| `ATOMIC_ACP_WAIT_FOR_WORKFLOWS`      | `1`                                | Set to `0` to end a message without waiting for the workflow runs it started.                        |
 | `ATOMIC_ACP_HEADLESS`                | unset                              | Set to `1` when no person can answer questions. See [Headless clients](#headless-clients).           |
 | `ATOMIC_ACP_ATOMIC_ARGS`             | unset                              | JSON array of extra arguments for every Atomic process, for example `["--model", "openai/gpt-5.5"]`. |
 
@@ -234,12 +239,13 @@ npm run format
 
 The ACP side lives in `src/acp/`, and the wrapper around the Atomic subprocess lives in `src/atomic-rpc/`.
 
-Three smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
+These smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
 
 ```bash
 npm run build
 npm run smoke:e2e:atomic          # one prompt, checks streamed text and end_turn
 npm run smoke:mcp                 # an editor MCP server's tool is called through ACP
+npm run smoke:workflow-wait       # /workflow sleepy keeps the message open until the run ends
 node scripts/smoke-workflow.mjs   # runs /workflow list over ACP
 ```
 
