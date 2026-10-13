@@ -1,12 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicAcpSession } from '../../src/acp/session.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
-import { readFakeAtomicReport, writeFakeAtomicCli } from '../helpers/fake-atomic-cli.js'
+import { readFakeAtomicReport, removeTempDir, writeFakeAtomicCli } from '../helpers/fake-atomic-cli.js'
 
 function entry(customType: string, data: Record<string, unknown>) {
   return { type: 'entry_appended', entry: { type: 'custom', customType, data } }
@@ -47,12 +47,12 @@ test('Atomic dying mid-workflow fails the prompt and every open tool call of the
 
     const turn = session.prompt('/workflow sleepy')
     await allOpen
+    // On Windows the kill reaches node behind the atomic.cmd launcher; cmd.exe then exits with a code.
     process.kill(readFakeAtomicReport(root).pid, 'SIGKILL')
 
     await assert.rejects(turn, (error: Error & { code?: number }) => {
       assert.equal(error.code, -32603)
-      assert.match(error.message, /Atomic exited/)
-      assert.match(error.message, /SIGKILL/)
+      assert.match(error.message, /Atomic exited \((code=\d+, signal=null|code=null, signal=SIG[A-Z]+)\)/)
       return true
     })
     for (const toolCallId of opened) {
@@ -64,7 +64,7 @@ test('Atomic dying mid-workflow fails the prompt and every open tool call of the
       assert.match(JSON.stringify(last), /Atomic exited/)
     }
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })

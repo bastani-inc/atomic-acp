@@ -99,6 +99,9 @@ export const NO_PERSON_FOR_ASK_USER_QUESTION =
   'No person is available to answer questions in this session: the ACP client is running headless. ' +
   'Do not ask again. In your final reply, state the question you needed answered and the assumption you made or would need, then stop.'
 
+/** How long dispose waits for Atomic to exit before removing the extension anyway. */
+const DISPOSE_EXIT_WAIT_MS = 5_000
+
 /** Maximum wait for an auxiliary context-usage update. */
 export const SESSION_STATS_TIMEOUT_MS = 1_000
 
@@ -139,10 +142,12 @@ export class AtomicRpcProcess {
   private readonly preludeLines: string[] = []
   private readonly adapterExtension: AdapterExtensionFile | undefined
   private exitError: AtomicProcessExitError | undefined
+  private readonly exited: Promise<void>
 
   private constructor(child: ChildProcessWithoutNullStreams, adapterExtension?: AdapterExtensionFile) {
     this.child = child
     this.adapterExtension = adapterExtension
+    this.exited = new Promise(resolve => child.once('exit', () => resolve()))
 
     let stdoutBuffer = ''
     child.stdout.setEncoding('utf8')
@@ -174,7 +179,7 @@ export class AtomicRpcProcess {
     })
 
     child.on('exit', (code, signal) => {
-      this.adapterExtension?.dispose()
+      void this.adapterExtension?.dispose()
       this.exitError = new AtomicProcessExitError(code, signal)
       this.rejectPendingAndNotifyExit(this.exitError)
     })
@@ -219,7 +224,7 @@ export class AtomicRpcProcess {
           : process.env
       }) as ChildProcessWithoutNullStreams
     } catch (e) {
-      adapterExtension?.dispose()
+      await adapterExtension?.dispose()
       throw e
     }
 
@@ -244,7 +249,7 @@ export class AtomicRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
-      adapterExtension?.dispose()
+      await adapterExtension?.dispose()
       const code = typeof e?.code === 'string' ? e.code : undefined
       if (code === 'ENOENT') {
         throw new AtomicRpcSpawnError(
@@ -313,14 +318,30 @@ export class AtomicRpcProcess {
     for (const h of this.exitHandlers) h(err)
   }
 
-  dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
-    this.adapterExtension?.dispose()
-    if (this.child.killed) return
-    try {
-      this.child.kill(signal as any)
-    } catch {
-      // ignore
+  /**
+   * Stop Atomic. Resolves once it has exited (or after a bounded wait) and its extension is removed;
+   * never rejects. Windows keeps the extension's directory busy while Atomic still runs.
+   */
+  async dispose(signal: NodeJS.Signals | number = 'SIGTERM'): Promise<void> {
+    if (!this.hasExited && !this.child.killed) {
+      try {
+        this.child.kill(signal as any)
+      } catch {
+        // ignore
+      }
     }
+    if (!this.hasExited) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        this.exited,
+        new Promise<void>(resolve => {
+          timer = setTimeout(resolve, DISPOSE_EXIT_WAIT_MS)
+          timer.unref?.()
+        })
+      ])
+      clearTimeout(timer)
+    }
+    await this.adapterExtension?.dispose()
   }
 
   /**

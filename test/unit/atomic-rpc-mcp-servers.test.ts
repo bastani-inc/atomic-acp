@@ -1,13 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import {
   readFakeAtomicReport as readReport,
+  removeTempDir,
   writeFakeAtomicCli as writeFakeAtomic
 } from '../helpers/fake-atomic-cli.js'
+
+async function waitUntil(condition: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(message)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
 
 test('AtomicRpcProcess registers MCP servers through a private extension removed on dispose', async () => {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-mcp-'))
@@ -34,11 +43,11 @@ test('AtomicRpcProcess registers MCP servers through a private extension removed
     }
     assert.ok(existsSync(extension.path))
 
-    proc.dispose()
+    await proc.dispose()
     assert.equal(existsSync(extension.path), false, 'extension file must be deleted when the session ends')
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })
 
@@ -66,15 +75,19 @@ test('AtomicRpcProcess keeps MCP env and header values out of the extension, and
     const report = readReport(root)
 
     assert.deepEqual(report.resolved, { tools: { env }, web: { headers } })
+    const web = report.registered.web as { url?: unknown }
+    const url = new URL(String(web.url))
+    assert.equal(url.href, 'https://example.com/mcp', 'names, commands and URLs stay in the extension')
+    assert.equal(url.host, 'example.com')
     const [source] = report.sources
-    assert.ok(source?.includes('https://example.com/mcp'), 'names, commands and URLs stay in the extension')
+    assert.ok(source !== undefined)
     for (const value of [secret, '${HOME}', '!echo pwned', '!echo header-command-ran']) {
       assert.ok(!source.includes(value), `extension source must not contain ${value}`)
     }
     assert.equal(report.disableCompileCache, '1', "Node's compile cache must not keep a copy of the extension")
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })
 
@@ -93,10 +106,10 @@ test('AtomicRpcProcess deletes the MCP extension when Atomic exits on its own', 
     const exited = new Promise<void>(resolve => proc!.onExit(() => resolve()))
     process.kill(report.pid, 'SIGKILL')
     await exited
-    assert.equal(existsSync(path), false)
+    await waitUntil(() => !existsSync(path), 'extension file must be deleted when Atomic exits')
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })
 
@@ -106,11 +119,11 @@ test('AtomicRpcProcess passes no extension when there are no MCP servers', async
   try {
     const atomicCommand = writeFakeAtomic(root)
     proc = await AtomicRpcProcess.spawn({ cwd: root, atomicCommand, mcpServers: {} })
-    proc.dispose()
+    await proc.dispose()
     assert.deepEqual(readReport(root).modes, [])
     assert.ok(!readReport(root).args.includes('-e'))
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })

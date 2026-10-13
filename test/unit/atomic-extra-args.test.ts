@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAtomicExtraArgs } from '../../src/atomic-rpc/command.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
+import { removeTempDir } from '../helpers/fake-atomic-cli.js'
 
 const node = process.execPath
 const entry = '/usr/lib/atomic-acp/dist/index.js'
@@ -71,7 +72,7 @@ test('AtomicRpcProcess.spawn appends extra args verbatim without a shell', async
     assert.deepEqual(argv.slice(0, 3), ['--mode', 'rpc', '--no-themes'])
     assert.deepEqual(argv.slice(-extraArgs.length), extraArgs)
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })

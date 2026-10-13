@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,19 +8,51 @@ export type AdapterExtensionFile = {
   path: string
   /** Variables Atomic needs in its environment: the MCP env and header values the extension references. */
   env: Record<string, string>
-  /** Delete the extension and its directory. Safe to call more than once. */
-  dispose(): void
+  /**
+   * Delete the extension and its directory once Atomic has exited. Retries while the directory is
+   * busy (Windows) and never rejects. Safe to call more than once.
+   */
+  dispose(): Promise<void>
 }
+
+export type AdapterExtensionCleanup = {
+  /** Removes a directory tree; defaults to `fs.promises.rm` with `recursive` and `force`. */
+  rm?: (dir: string) => Promise<void>
+  /** Waits between removal attempts; one attempt more than there are delays. */
+  retryDelaysMs?: readonly number[]
+}
+
+/** Windows refuses to remove a directory while a process still holds a file in it. */
+const RETRYABLE_RM_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EMFILE', 'ENFILE'])
+const RM_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1600]
 
 const liveDirs = new Set<string>()
 let exitHookInstalled = false
 
-function removeDir(dir: string): void {
-  liveDirs.delete(dir)
+function removeDirNow(dir: string): void {
   try {
     rmSync(dir, { recursive: true, force: true })
+    liveDirs.delete(dir)
   } catch {
     // best effort
+  }
+}
+
+async function removeDir(dir: string, cleanup: AdapterExtensionCleanup): Promise<void> {
+  const removeTree = cleanup.rm ?? ((path: string) => rm(path, { recursive: true, force: true }))
+  const delays = cleanup.retryDelaysMs ?? RM_RETRY_DELAYS_MS
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await removeTree(dir)
+      liveDirs.delete(dir)
+      return
+    } catch (error) {
+      const delay = delays[attempt]
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      // Give up quietly; the exit hook tries once more when the adapter exits.
+      if (delay === undefined || code === undefined || !RETRYABLE_RM_CODES.has(code)) return
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
   }
 }
 
@@ -27,7 +60,7 @@ function installExitHook(): void {
   if (exitHookInstalled) return
   exitHookInstalled = true
   process.once('exit', () => {
-    for (const dir of [...liveDirs]) removeDir(dir)
+    for (const dir of [...liveDirs]) removeDirNow(dir)
   })
 }
 
@@ -83,7 +116,10 @@ function referenceSecretValues(servers: Record<string, AdapterMcpServer>): {
  * commands, args and URLs, so it lives in a private 0700 directory, is 0600, and is removed on
  * dispose or when the adapter exits.
  */
-export function writeAdapterExtension(options: AdapterExtensionOptions): AdapterExtensionFile | undefined {
+export function writeAdapterExtension(
+  options: AdapterExtensionOptions,
+  cleanup: AdapterExtensionCleanup = {}
+): AdapterExtensionFile | undefined {
   const { servers, env } = referenceSecretValues(options.mcpServers ?? {})
   const askReason = options.askUserQuestionUnavailable
   if (Object.keys(servers).length === 0 && askReason === undefined) return undefined
@@ -107,9 +143,10 @@ export function writeAdapterExtension(options: AdapterExtensionOptions): Adapter
       ''
     ].join('\n')
     writeFileSync(path, source, { mode: 0o600 })
-    return { path, env, dispose: () => removeDir(dir) }
+    let removal: Promise<void> | undefined
+    return { path, env, dispose: () => (removal ??= removeDir(dir, cleanup)) }
   } catch (error) {
-    removeDir(dir)
+    removeDirNow(dir)
     throw error
   }
 }

@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicAcpAgent } from '../../src/acp/agent.js'
 import { AtomicAcpSession } from '../../src/acp/session.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
-import { readFakeAtomicReport, writeFakeAtomicCli } from '../helpers/fake-atomic-cli.js'
+import { readFakeAtomicReport, removeTempDir, writeFakeAtomicCli } from '../helpers/fake-atomic-cli.js'
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
@@ -98,8 +98,8 @@ test('headless Atomic blocks ask_user_question with a clear result and leaves ot
     assert.match(String((blocked as { reason?: unknown }).reason), /No person is available/)
     assert.deepEqual(toolCallResults.bash, [null])
   } finally {
-    proc?.dispose('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
+    await proc?.dispose('SIGKILL')
+    await removeTempDir(root)
   }
 })
 

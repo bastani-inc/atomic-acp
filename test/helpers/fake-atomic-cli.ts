@@ -1,4 +1,5 @@
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -83,4 +84,12 @@ export function writeFakeAtomicCli(root: string, opts: { promptEvents?: object[]
 
 export function readFakeAtomicReport(root: string): FakeAtomicReport {
   return JSON.parse(readFileSync(join(root, 'report.json'), 'utf8')) as FakeAtomicReport
+}
+
+/**
+ * Remove a test's temp dir. Await the Atomic process's `dispose()` first: on Windows the dir stays
+ * busy while a process runs in it, and briefly after a `.cmd` launcher's node child exits.
+ */
+export async function removeTempDir(root: string): Promise<void> {
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }

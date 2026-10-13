@@ -8,6 +8,7 @@
 // Needs `npm run build` and an Atomic provider login; skips when Atomic has no usable model.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { once } from 'node:events'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -22,7 +23,7 @@ const smokeTmp = await mkdtemp(join(tmpdir(), 'atomic-acp-mcp-smoke-tmp-'))
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 const fakeServer = fileURLToPath(new URL('./fixtures/echo-marker-mcp-server.mjs', import.meta.url))
 const markerLog = join(workspace, 'echo-marker.jsonl')
-const random = () => Math.random().toString(36).slice(2, 10)
+const random = () => randomBytes(5).toString('hex')
 const marker = `marker-${random()}`
 const envSecret = `mcp-env-secret-${random()}`
 const headerSecret = `mcp-header-secret-${random()}`
