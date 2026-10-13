@@ -20,7 +20,7 @@ export function readJsonFile(path: string): Record<string, unknown> {
   try {
     if (!existsSync(path)) return {}
     const raw = readFileSync(path, 'utf-8')
-    const data = JSON.parse(raw)
+    const data = JSON.parse(raw.replace(/^\uFEFF/, ''))
     return isObject(data) ? data : {}
   } catch {
     return {}

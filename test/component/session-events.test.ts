@@ -280,7 +280,7 @@ test('AtomicAcpSession: emits agent_message_chunk for auto_compaction_start', as
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Context nearing limit, running automatic compaction...' }
+    content: { type: 'text', text: 'Compacting context...' }
   })
 })
 
@@ -306,7 +306,7 @@ test('AtomicAcpSession: emits agent_message_chunk for auto_compaction_end', asyn
     sessionUpdate: 'agent_message_chunk',
     content: {
       type: 'text',
-      text: 'Automatic compaction finished; context was summarized to continue the session.'
+      text: 'Context compaction finished.'
     }
   })
 })

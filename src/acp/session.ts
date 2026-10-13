@@ -1018,23 +1018,25 @@ export class AtomicAcpSession {
         break
       }
 
+      case 'compaction_start':
       case 'auto_compaction_start': {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Context nearing limit, running automatic compaction...'
+            text: 'Compacting context...'
           } satisfies ContentBlock
         })
         break
       }
 
+      case 'compaction_end':
       case 'auto_compaction_end': {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Automatic compaction finished; context was summarized to continue the session.'
+            text: 'Context compaction finished.'
           } satisfies ContentBlock
         })
         break
