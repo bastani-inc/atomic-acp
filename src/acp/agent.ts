@@ -1,3 +1,4 @@
+import { renderWorkflowHistory } from './workflow-history.js'
 import {
   RequestError,
   type Agent as ACPAgent,
@@ -56,6 +57,8 @@ type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
 function builtinAvailableCommands(): AvailableCommand[] {
   return [
+    { name: 'workflow-runs', description: 'List retained workflow runs', input: { hint: '[status]' } },
+    { name: 'workflow-run', description: 'Show a workflow run summary', input: { hint: '<runId>' } },
     {
       name: 'compact',
       description: 'Manually compact the session context',
@@ -335,7 +338,7 @@ export class AtomicAcpAgent implements ACPAgent {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
 
           await this.conn.sessionUpdate({
@@ -382,6 +385,31 @@ export class AtomicAcpAgent implements ACPAgent {
       const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)
       const argsString = space === -1 ? '' : trimmed.slice(space + 1)
       const args = parseCommandArgs(argsString)
+
+      if (cmd === 'workflow-runs' || cmd === 'workflow-run') {
+        let text: string
+        if (args.length > 1 || (cmd === 'workflow-run' && !args[0])) {
+          text = cmd === 'workflow-run' ? 'Usage: /workflow-run <runId>' : 'Usage: /workflow-runs [status]'
+        } else {
+          try {
+            const data =
+              cmd === 'workflow-runs'
+                ? await session.proc.listWorkflowRuns(args[0])
+                : await session.proc.getWorkflowRunSummary(args[0]!)
+            text = renderWorkflowHistory(data, cmd === 'workflow-runs')
+          } catch (error) {
+            text = `Could not read workflow history: ${error instanceof Error ? error.message : String(error)}`
+          }
+        }
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text }
+          }
+        })
+        return { stopReason: 'end_turn' }
+      }
 
       if (cmd === 'compact') {
         const customInstructions = args.join(' ').trim() || undefined
@@ -1027,7 +1055,7 @@ export class AtomicAcpAgent implements ACPAgent {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
 
           await this.conn.sessionUpdate({

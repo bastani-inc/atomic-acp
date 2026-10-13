@@ -162,7 +162,17 @@ Other built-in commands:
 
 - Skill commands can be enabled in Atomic settings and will appear in the slash command list in ACP client as `/skill:skill-name`.
 
-**Note**: Slash commands provided by Atomic extensions are not currently supported.
+#### 4) Extension commands and workflows
+
+Atomic extension commands (including `/workflow`) are discovered through RPC and passed through unchanged. Usage text supplies the command argument hint; interactive argument completion itself is not part of ACP slash commands.
+
+- `/workflow list` lists available workflows; other `/workflow` actions run and inspect them.
+- `/workflow-runs [status]` lists retained runs for the current project.
+- `/workflow-run <runId>` shows a retained run summary. Summaries may lag the live run.
+
+Workflow tool progress, visible extension messages, status text, and text widgets stream as session updates, including after the initiating prompt completes. Workflow dialogs are handled by the extension UI bridge according to client capabilities.
+
+Run `npm run build && node scripts/smoke-workflow.mjs` to check `/workflow list` against the installed Atomic CLI.
 
 ## Authentication (ACP Registry support)
 

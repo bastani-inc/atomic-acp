@@ -27,7 +27,7 @@ export function toAvailableCommandsFromAtomicGetCommands(
   raw: AtomicRpcCommandInfo[]
 } {
   const enableSkillCommands = opts?.enableSkillCommands ?? true
-  const includeExtensionCommands = opts?.includeExtensionCommands ?? false
+  const includeExtensionCommands = opts?.includeExtensionCommands ?? true
 
   const root: any = data
   const commandsRaw: AtomicRpcCommandInfo[] = Array.isArray(root?.commands)
@@ -48,10 +48,12 @@ export function toAvailableCommandsFromAtomicGetCommands(
     if (!enableSkillCommands && name.startsWith('skill:')) continue
 
     const desc = typeof c?.description === 'string' ? c.description.trim() : ''
+    const usage = desc.match(/Usage:\s*\/\S+\s+(.+)$/i)?.[1]
 
     out.push({
       name,
-      description: desc || describeFallback(c)
+      description: desc || describeFallback(c),
+      ...(usage ? { input: { hint: usage } } : {})
     })
   }
 
