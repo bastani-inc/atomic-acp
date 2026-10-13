@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { AtomicAcpSession } from '../../src/acp/session.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
+import { readClientElicitationSupport } from '../../src/acp/elicitation/atomic-questionnaire.js'
+import type { InitializeRequest } from '@agentclientprotocol/sdk'
 
-function setup(form = false) {
+function setup(form = false, clientCapabilities?: InitializeRequest['clientCapabilities']) {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
   const session = new AtomicAcpSession({
@@ -13,7 +15,11 @@ function setup(form = false) {
     mcpServers: [],
     proc: proc as unknown as AtomicRpcProcess,
     conn: asAgentConn(conn),
-    ...(form ? { clientElicitationSupport: { form: true } as const } : {})
+    ...(clientCapabilities
+      ? { clientElicitationSupport: readClientElicitationSupport({ protocolVersion: 1, clientCapabilities }) }
+      : form
+        ? { clientElicitationSupport: { form: true } as const }
+        : {})
   })
   return { conn, proc, session }
 }
@@ -153,6 +159,7 @@ for (const form of [false, true]) {
         })
       }
     proc.emit({ type: 'extension_ui_request', id: 'cancel', method: 'confirm' })
+    await flush()
     await session.cancel()
     answer?.()
     await flush()
@@ -188,5 +195,56 @@ for (const action of ['cancel', 'decline'] as const) {
     proc.emit({ type: 'extension_ui_request', id: action, method: 'input' })
     await flush()
     assert.deepEqual(proc.extensionUiResponses, [{ type: 'extension_ui_response', id: action, cancelled: true }])
+  })
+}
+
+for (const form of [false, true]) {
+  test(`duplicate pending dialog IDs do not replace the original request (form=${form})`, async () => {
+    const { conn, proc, session } = setup(form)
+    if (form) conn.elicitationResponses.push(new Promise(() => {}))
+    else
+      conn.requestPermission = async params => {
+        conn.permissionRequests.push(params)
+        return new Promise(() => {})
+      }
+    const event = { type: 'extension_ui_request', id: 'duplicate', method: 'confirm' }
+    proc.emit(event)
+    proc.emit(event)
+    await flush()
+    assert.equal(conn.elicitationRequests.length + conn.permissionRequests.length, 1)
+    await session.cancel()
+    assert.deepEqual(proc.extensionUiResponses, [{ type: 'extension_ui_response', id: 'duplicate', cancelled: true }])
+  })
+}
+
+test('extension notifications normalize missing and unknown severity to info', async () => {
+  const { conn, proc } = setup()
+  for (const notifyType of [undefined, 'debug', 42]) {
+    proc.emit({ type: 'extension_ui_request', id: String(notifyType), method: 'notify', notifyType })
+  }
+  await flush()
+  assert.deepEqual(
+    conn.updates.map(({ update }) => update._meta),
+    Array.from({ length: 3 }, () => ({ atomicAcp: { notify: { level: 'info' } } }))
+  )
+  assert.deepEqual(proc.extensionUiResponses, [])
+})
+
+for (const elicitation of [{}, { url: {} }, { form: null, url: {} }]) {
+  test(`extension dialogs fall back without advertised form mode: ${JSON.stringify(elicitation)}`, async () => {
+    const { conn, proc } = setup(false, { elicitation })
+    conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'yes' } }
+    for (const method of ['confirm', 'input', 'editor']) {
+      proc.emit({ type: 'extension_ui_request', id: method, method })
+      await flush()
+    }
+    await flush()
+    assert.equal(conn.elicitationRequests.length, 0)
+    assert.equal(conn.permissionRequests.length, 1)
+    assert.deepEqual(proc.extensionUiResponses, [
+      { type: 'extension_ui_response', id: 'confirm', confirmed: true },
+      { type: 'extension_ui_response', id: 'input', cancelled: true },
+      { type: 'extension_ui_response', id: 'editor', cancelled: true }
+    ])
   })
 }

@@ -2,7 +2,32 @@ import { createFormElicitation } from './atomic-questionnaire.js'
 import type { AgentSideConnection, ElicitationPropertySchema } from '@agentclientprotocol/sdk'
 import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../atomic-rpc/process.js'
 
-export async function requestExtensionDialog(
+export function requestExtensionDialog(
+  conn: AgentSideConnection,
+  sessionId: string,
+  ev: AtomicRpcEvent,
+  form: boolean,
+  signal?: AbortSignal
+): Promise<AtomicExtensionUiResponse> {
+  const cancelled: AtomicExtensionUiResponse = {
+    type: 'extension_ui_response',
+    id: String(ev.id),
+    cancelled: true
+  }
+  if (signal?.aborted) return Promise.resolve(cancelled)
+  return new Promise(resolve => {
+    const finish = (response: AtomicExtensionUiResponse) => {
+      signal?.removeEventListener('abort', abort)
+      resolve(response)
+    }
+    const abort = () => finish(cancelled)
+    signal?.addEventListener('abort', abort, { once: true })
+    // The ACP SDK has no per-request cancellation; settle locally and ignore late replies.
+    void requestDialog(conn, sessionId, ev, form).then(finish)
+  })
+}
+
+async function requestDialog(
   conn: AgentSideConnection,
   sessionId: string,
   ev: AtomicRpcEvent,

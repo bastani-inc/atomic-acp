@@ -750,11 +750,18 @@ export class AtomicAcpSession {
       this.emit({
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: typeof ev.message === 'string' ? ev.message : 'Atomic notification' },
-        _meta: { atomicAcp: { notify: { level: typeof ev.notifyType === 'string' ? ev.notifyType : 'info' } } }
+        _meta: {
+          atomicAcp: {
+            notify: {
+              level: ev.notifyType === 'warning' || ev.notifyType === 'error' ? ev.notifyType : 'info'
+            }
+          }
+        }
       })
       return
     }
     if (!['select', 'confirm', 'input', 'editor'].includes(String(method))) return
+    if (this.pendingExtensionDialogs.has(id)) return
     if (!this.clientElicitationSupport.form && (method === 'input' || method === 'editor')) {
       this.emitAgentText(`Atomic ${method} UI request is not supported in ACP yet; cancelling it.`)
     }
@@ -762,21 +769,33 @@ export class AtomicAcpSession {
       await this.writeExtensionUiResponse({ type: 'extension_ui_response', id, cancelled: true })
       return
     }
+    const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
-    const finish = async (response: AtomicExtensionUiResponse) => {
-      if (this.pendingExtensionDialogs.get(id) !== cancel) return
-      this.pendingExtensionDialogs.delete(id)
-      if (timer) clearTimeout(timer)
-      await this.writeExtensionUiResponse(response)
+    const completion = Promise.resolve().then(async () => {
+      try {
+        const response = await requestExtensionDialog(
+          this.conn,
+          this.sessionId,
+          ev,
+          this.clientElicitationSupport.form,
+          controller.signal
+        )
+        if (timer) clearTimeout(timer)
+        await this.writeExtensionUiResponse(response)
+      } finally {
+        if (timer) clearTimeout(timer)
+        this.pendingExtensionDialogs.delete(id)
+      }
+    })
+    const cancel = async () => {
+      controller.abort()
+      await completion
     }
-    const cancel = () => finish({ type: 'extension_ui_response', id, cancelled: true })
     this.pendingExtensionDialogs.set(id, cancel)
     if (typeof ev.timeout === 'number' && Number.isFinite(ev.timeout) && ev.timeout >= 0) {
-      timer = setTimeout(() => {
-        void cancel()
-      }, ev.timeout)
+      timer = setTimeout(() => controller.abort(), ev.timeout)
     }
-    await finish(await requestExtensionDialog(this.conn, this.sessionId, ev, this.clientElicitationSupport.form))
+    await completion
   }
 
   private handleAtomicEvent(ev: AtomicRpcEvent) {
