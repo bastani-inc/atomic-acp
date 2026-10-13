@@ -15,7 +15,7 @@ const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 const fakeServer = fileURLToPath(new URL('./fixtures/echo-marker-mcp-server.mjs', import.meta.url))
 const markerLog = join(workspace, 'echo-marker.jsonl')
 const marker = `marker-${Math.random().toString(36).slice(2, 10)}`
-const extensionDirs = () => new Set(readdirSync(tmpdir()).filter(name => name.startsWith('atomic-acp-mcp-')))
+const extensionDirs = () => new Set(readdirSync(tmpdir()).filter(name => name.startsWith('atomic-acp-ext-')))
 const dirsBefore = extensionDirs()
 
 const child = spawn(process.execPath, [entrypoint], {

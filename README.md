@@ -173,6 +173,7 @@ Set these in the `env` object of your agent server entry:
 | ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.                               |
 | `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts.                    |
+| `ATOMIC_ACP_HEADLESS`                | unset                              | Set to `1` when no person can answer questions. See [Headless clients](#headless-clients).           |
 | `ATOMIC_ACP_ATOMIC_ARGS`             | unset                              | JSON array of extra arguments for every Atomic process, for example `["--model", "openai/gpt-5.5"]`. |
 
 ```json
@@ -191,6 +192,16 @@ Set these in the `env` object of your agent server entry:
 }
 ```
 
+### Headless clients
+
+Set `ATOMIC_ACP_HEADLESS=1` for clients that run Atomic without a person watching, such as automation. Questions then end at once instead of waiting:
+
+- `ask_user_question` returns a tool result saying no person is available, so the model states the question and its assumption in its reply and stops.
+- Extension dialogs (pick, confirm, text input) are cancelled, and the thread shows `No person is available to answer "<question>"`.
+- When a workflow stops for human input, `atomic-acp` quits that run (it stays resumable with `/workflow resume`) and says so in the thread.
+
+Without the variable, a dialog that the client rejects, for example because it can't show permission prompts, is cancelled with the same notice.
+
 ### Extra Atomic arguments
 
 Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` starts, after the ones from `ATOMIC_ACP_ATOMIC_ARGS`:
@@ -205,7 +216,7 @@ Everything else comes from Atomic itself. Provider logins, models, skills, and e
 
 ## Limitations
 
-- `ask_user_question` isn't available over ACP because Atomic RPC mode can't carry its custom UI.
+- `ask_user_question` can't be answered over ACP because Atomic RPC mode can't carry its custom UI. Headless clients get a clear "no person is available" result instead.
 - The editor's file and terminal APIs aren't used. Atomic reads, writes, and runs commands locally, and the editor displays the results.
 - If you send several messages while Atomic is busy, they are queued and sent one at a time.
 - Zed is the client this is tested against. Other ACP clients should work but may render some updates differently.

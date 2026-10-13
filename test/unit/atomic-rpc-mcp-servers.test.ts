@@ -1,57 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
-
-// Fake `atomic --mode rpc` that loads every `-e` extension with a stub extension API and
-// records what it saw, so the test observes what real Atomic would receive.
-function writeFakeAtomic(root: string): string {
-  const report = join(root, 'report.json')
-  writeFileSync(
-    join(root, 'fake-atomic.mjs'),
-    [
-      "import { statSync, writeFileSync } from 'node:fs'",
-      "import { dirname } from 'node:path'",
-      "import { createInterface } from 'node:readline'",
-      "import { pathToFileURL } from 'node:url'",
-      'const args = process.argv.slice(2)',
-      'const extensions = args.flatMap((arg, i) => (arg === "-e" ? [args[i + 1]] : []))',
-      'const registered = {}',
-      'const modes = []',
-      'for (const path of extensions) {',
-      '  modes.push({ path, file: statSync(path).mode & 0o777, dir: statSync(dirname(path)).mode & 0o777 })',
-      '  const mod = await import(pathToFileURL(path).href)',
-      '  mod.default({ registerMcpServer: (name, config) => { registered[name] = config } })',
-      '}',
-      `writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, args, modes, registered }))`,
-      'createInterface({ input: process.stdin }).on("line", line => {',
-      '  const command = JSON.parse(line)',
-      '  process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data: {} }) + "\\n")',
-      '})'
-    ].join('\n')
-  )
-  const launcher = join(root, process.platform === 'win32' ? 'atomic.cmd' : 'atomic')
-  if (process.platform === 'win32') {
-    writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${join(root, 'fake-atomic.mjs')}" %*\r\n`)
-  } else {
-    writeFileSync(launcher, "#!/usr/bin/env node\nimport('./fake-atomic.mjs')\n")
-    chmodSync(launcher, 0o755)
-  }
-  return launcher
-}
-
-type Report = {
-  pid: number
-  args: string[]
-  modes: Array<{ path: string; file: number; dir: number }>
-  registered: Record<string, unknown>
-}
-
-function readReport(root: string): Report {
-  return JSON.parse(readFileSync(join(root, 'report.json'), 'utf8')) as Report
-}
+import {
+  readFakeAtomicReport as readReport,
+  writeFakeAtomicCli as writeFakeAtomic
+} from '../helpers/fake-atomic-cli.js'
 
 test('AtomicRpcProcess registers MCP servers through a private extension removed on dispose', async () => {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-mcp-'))

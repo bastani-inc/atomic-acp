@@ -39,6 +39,7 @@ import {
 } from './translate/bash.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import { atomicMcpServersForSpawn } from './mcp-servers.js'
+import { parseWorkflowEvent, type WorkflowEvent } from './translate/workflow-events.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -47,6 +48,7 @@ type SessionCreateParams = {
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   atomicCommand?: string
   clientElicitationSupport?: ClientElicitationSupport
+  headless?: boolean
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -150,7 +152,8 @@ export class SessionManager {
       proc = await AtomicRpcProcess.spawn({
         cwd: params.cwd,
         atomicCommand: params.atomicCommand,
-        mcpServers: atomicMcpServersForSpawn(params.mcpServers)
+        mcpServers: atomicMcpServersForSpawn(params.mcpServers),
+        headless: params.headless
       })
     } catch (e) {
       if (e instanceof AtomicRpcSpawnError) {
@@ -181,7 +184,8 @@ export class SessionManager {
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
       autoTitle: true,
-      clientElicitationSupport: params.clientElicitationSupport
+      clientElicitationSupport: params.clientElicitationSupport,
+      headless: params.headless
     })
 
     this.sessions.set(sessionId, session)
@@ -209,7 +213,8 @@ export class SessionManager {
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      clientElicitationSupport: params.clientElicitationSupport
+      clientElicitationSupport: params.clientElicitationSupport,
+      headless: params.headless
     })
 
     this.sessions.set(sessionId, session)
@@ -231,6 +236,7 @@ export class AtomicAcpSession {
   readonly proc: AtomicRpcProcess
   private readonly conn: AgentSideConnection
   private readonly clientElicitationSupport: ClientElicitationSupport
+  private readonly headless: boolean
   private fileCommands: FileSlashCommand[]
 
   // Used to map abort semantics to ACP stopReason.
@@ -259,6 +265,7 @@ export class AtomicAcpSession {
   private lastEmit: Promise<void> = Promise.resolve()
 
   private pendingExtensionDialogs = new Map<string, () => Promise<void>>()
+  private readonly workflowRunNames = new Map<string, string>()
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -268,6 +275,8 @@ export class AtomicAcpSession {
     fileCommands?: FileSlashCommand[]
     clientElicitationSupport?: ClientElicitationSupport
     autoTitle?: boolean
+    /** No person can answer questions, so extension dialogs are cancelled at once with a notice. */
+    headless?: boolean
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -275,6 +284,7 @@ export class AtomicAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.clientElicitationSupport = opts.clientElicitationSupport ?? NO_CLIENT_ELICITATION_SUPPORT
+    this.headless = opts.headless ?? false
     this.fileCommands = opts.fileCommands ?? []
 
     this.initialTitlePending = opts.autoTitle ?? false
@@ -602,6 +612,14 @@ export class AtomicAcpSession {
     }
     if (!['select', 'confirm', 'input', 'editor'].includes(String(method))) return
     if (this.pendingExtensionDialogs.has(id)) return
+    const question = typeof ev.title === 'string' && ev.title ? ev.title : `Atomic ${method}`
+    const noPersonAvailable = () =>
+      this.emitAgentText(`No person is available to answer "${question}", so Atomic was told it was cancelled.`)
+    if (this.headless) {
+      noPersonAvailable()
+      await this.writeExtensionUiResponse({ type: 'extension_ui_response', id, cancelled: true })
+      return
+    }
     if (!this.clientElicitationSupport.form && (method === 'input' || method === 'editor')) {
       this.emitAgentText(`Atomic ${method} UI request is not supported in ACP yet; cancelling it.`)
     }
@@ -618,7 +636,8 @@ export class AtomicAcpSession {
           this.sessionId,
           ev,
           this.clientElicitationSupport.form,
-          controller.signal
+          controller.signal,
+          noPersonAvailable
         )
         if (timer) clearTimeout(timer)
         await this.writeExtensionUiResponse(response)
@@ -638,8 +657,23 @@ export class AtomicAcpSession {
     await completion
   }
 
+  private handleWorkflowEvent(event: WorkflowEvent): void {
+    if (event.kind === 'run_start' && event.name) this.workflowRunNames.set(event.runId, event.name)
+    if (event.kind === 'stage_start' && event.humanInput && this.headless) {
+      const name = this.workflowRunNames.get(event.runId) ?? event.runId
+      this.emitAgentText(
+        `No person is available to answer workflow "${name}" (stage ${event.name ?? event.stageId ?? 'input'}), so run ${event.runId} is being quit.`
+      )
+      void this.proc.prompt(`/workflow quit ${event.runId}`, [], 'followUp').catch(() => {
+        this.emitAgentText(`Could not quit workflow run ${event.runId}.`)
+      })
+    }
+  }
+
   private handleAtomicEvent(ev: AtomicRpcEvent) {
     const type = String((ev as any).type ?? '')
+    const workflowEvent = parseWorkflowEvent(ev)
+    if (workflowEvent) this.handleWorkflowEvent(workflowEvent)
 
     switch (type) {
       case 'session_info_changed': {

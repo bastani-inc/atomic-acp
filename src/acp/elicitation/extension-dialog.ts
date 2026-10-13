@@ -22,7 +22,8 @@ export function requestExtensionDialog(
   sessionId: string,
   ev: AtomicRpcEvent,
   form: boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onClientCannotAnswer?: () => void
 ): Promise<AtomicExtensionUiResponse> {
   const cancelled: AtomicExtensionUiResponse = {
     type: 'extension_ui_response',
@@ -38,7 +39,7 @@ export function requestExtensionDialog(
     const abort = () => finish(cancelled)
     signal?.addEventListener('abort', abort, { once: true })
     // The ACP SDK has no per-request cancellation; settle locally and ignore late replies.
-    void requestDialog(conn, sessionId, ev, form).then(finish)
+    void requestDialog(conn, sessionId, ev, form, onClientCannotAnswer).then(finish)
   })
 }
 
@@ -46,7 +47,8 @@ async function requestDialog(
   conn: AgentSideConnection,
   sessionId: string,
   ev: AtomicRpcEvent,
-  form: boolean
+  form: boolean,
+  onClientCannotAnswer?: () => void
 ): Promise<AtomicExtensionUiResponse> {
   const id = String(ev.id)
   const cancelled: AtomicExtensionUiResponse = { type: 'extension_ui_response', id, cancelled: true }
@@ -105,6 +107,8 @@ async function requestDialog(
     const index = options.findIndex((_, index) => optionId === `choice-${index}`)
     return index < 0 ? cancelled : { type: 'extension_ui_response', id, value: options[index]! }
   } catch {
+    // The client rejected the elicitation or permission request, so nobody can answer it.
+    onClientCannotAnswer?.()
     return cancelled
   }
 }

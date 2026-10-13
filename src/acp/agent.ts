@@ -39,6 +39,7 @@ import { getAuthMethods } from './auth.js'
 import { SessionManager, type AtomicAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { atomicMcpServersForSpawn, sameMcpServers } from './mcp-servers.js'
+import { isHeadlessFromEnv } from './headless.js'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from '../atomic-rpc/command.js'
 import { AtomicRpcProcess, AtomicRpcSpawnError } from '../atomic-rpc/process.js'
 import { listAtomicSessions, findAtomicSession, readAtomicSessionTitle } from './atomic-sessions.js'
@@ -214,7 +215,8 @@ export class AtomicAcpAgent implements ACPAgent {
         cwd,
         sessionPath: stored.sessionFile,
         atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
-        mcpServers: atomicMcpServersForSpawn(opts?.mcpServers)
+        mcpServers: atomicMcpServersForSpawn(opts?.mcpServers),
+        headless: isHeadlessFromEnv()
       })
     } catch (error) {
       if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
@@ -227,7 +229,8 @@ export class AtomicAcpAgent implements ACPAgent {
         conn: this.conn,
         proc,
         fileCommands: loadSlashCommands(cwd),
-        clientElicitationSupport: this.clientElicitationSupport
+        clientElicitationSupport: this.clientElicitationSupport,
+        headless: isHeadlessFromEnv()
       })
       this.lastSessionCwd = cwd
       this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
@@ -292,7 +295,8 @@ export class AtomicAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
-      clientElicitationSupport: this.clientElicitationSupport
+      clientElicitationSupport: this.clientElicitationSupport,
+      headless: isHeadlessFromEnv()
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
