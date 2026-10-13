@@ -8,6 +8,14 @@ import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { SessionStore } from '../../src/acp/session-store.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 function fixture(t: import('node:test').TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-lifecycle-'))
   const previous = process.env.ATOMIC_CODING_AGENT_DIR
@@ -184,4 +192,163 @@ test('deletion discovers files without a mapping and tolerates already missing f
   store.upsert({ sessionId: 'missing', cwd: root, sessionFile: path })
   await agent.deleteSession({ sessionId: 'missing' })
   assert.equal(store.get('missing'), null)
+})
+
+test('failed restore initialization disposes the child and permits a fresh restore', async t => {
+  const { agent } = fixture(t)
+  let disposals = 0
+  let spawns = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    dispose: () => {
+      disposals++
+    },
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high'],
+    setThinkingLevel: async () => {}
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => {
+    spawns++
+    return proc as unknown as AtomicRpcProcess
+  })
+  const events = t.mock.method(proc, 'onEvent', () => {
+    throw new Error('process unavailable')
+  })
+  await assert.rejects(agent.setSessionMode({ sessionId: 'saved', modeId: 'high' }), /process unavailable/)
+  assert.equal(disposals, 1)
+  events.mock.restore()
+  await agent.setSessionMode({ sessionId: 'saved', modeId: 'high' })
+  assert.equal(spawns, 2)
+})
+
+test('load waits for an in-flight restore and reuses its live process', async t => {
+  const { root, agent, conn } = fixture(t)
+  const titleStarted = deferred<void>()
+  const titleReleased = deferred<void>()
+  let spawns = 0
+  let disposals = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    dispose: () => {
+      disposals++
+    },
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high'],
+    setThinkingLevel: async () => {}
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => {
+    spawns++
+    return proc as unknown as AtomicRpcProcess
+  })
+  const publish = conn.sessionUpdate.bind(conn)
+  t.mock.method(conn, 'sessionUpdate', async (message: Parameters<typeof conn.sessionUpdate>[0]) => {
+    if (message.update.sessionUpdate === 'session_info_update') {
+      titleStarted.resolve()
+      await titleReleased.promise
+    }
+    await publish(message)
+  })
+  const restore = agent.setSessionMode({ sessionId: 'saved', modeId: 'high' })
+  await titleStarted.promise
+  const load = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  titleReleased.resolve()
+  await Promise.all([restore, load])
+  assert.equal(spawns, 1)
+  assert.equal(disposals, 0)
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  assert.equal(spawns, 1)
+  assert.equal(disposals, 0)
+})
+
+test('delete waits for a blocked restore and prevents queued operations from resurrecting it', async t => {
+  const { root, path, agent, store } = fixture(t)
+  const spawned = deferred<void>()
+  const releaseSpawn = deferred<AtomicRpcProcess>()
+  let disposals = 0
+  let spawns = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    dispose: () => {
+      disposals++
+    },
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high']
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => {
+    spawns++
+    spawned.resolve()
+    return releaseSpawn.promise
+  })
+  const restoring = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  await spawned.promise
+  let deleted = false
+  const deleting = agent.deleteSession({ sessionId: 'saved' }).then(() => {
+    deleted = true
+  })
+  const laterLoad = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  const rejected = assert.rejects(laterLoad, { code: -32602, data: 'Unknown sessionId: saved' })
+  await new Promise(resolve => setImmediate(resolve))
+  const deletedBeforeRestoreFinished = deleted
+  releaseSpawn.resolve(proc as unknown as AtomicRpcProcess)
+  await Promise.all([restoring, deleting, rejected])
+  assert.equal(deletedBeforeRestoreFinished, false)
+  assert.equal(disposals, 1)
+  assert.equal(spawns, 1)
+  assert.equal(existsSync(path), false)
+  assert.equal(store.get('saved'), null)
+  assert.deepEqual((await agent.listSessions({})).sessions, [])
+})
+
+test('restore operations wait for load history replay without replacing its process', async t => {
+  const { root, agent, conn } = fixture(t)
+  const historyStarted = deferred<void>()
+  const historyReleased = deferred<void>()
+  let spawns = 0
+  let changes = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high'],
+    getMessages: async () => {
+      historyStarted.resolve()
+      await historyReleased.promise
+      return { messages: [{ role: 'user', content: 'saved message' }] }
+    },
+    setThinkingLevel: async () => {
+      changes++
+    }
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => {
+    spawns++
+    return proc as unknown as AtomicRpcProcess
+  })
+  const load = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  await historyStarted.promise
+  const config = agent.setSessionMode({ sessionId: 'saved', modeId: 'high' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(changes, 0)
+  historyReleased.resolve()
+  const [response] = await Promise.all([load, config])
+  assert.equal(spawns, 1)
+  assert.equal(changes, 1)
+  assert.equal(response.modes?.currentModeId, 'high')
+  assert.deepEqual(
+    response.modes?.availableModes.map(mode => mode.id),
+    ['high']
+  )
+  assert.ok(conn.updates.some(({ update }) => update.sessionUpdate === 'user_message_chunk'))
+})
+
+test('load rejects a different cwd without closing an already restored session', async t => {
+  const { root, agent } = fixture(t)
+  let disposals = 0
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    dispose: () => {
+      disposals++
+    },
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high']
+  })
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => proc as unknown as AtomicRpcProcess)
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  await assert.rejects(agent.loadSession({ sessionId: 'saved', cwd: join(root, 'other'), mcpServers: [] }), {
+    code: -32602
+  })
+  assert.equal(disposals, 0)
 })

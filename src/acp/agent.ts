@@ -136,7 +136,7 @@ export class AtomicAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
-  private readonly restoringSessions = new Map<string, Promise<AtomicAcpSession>>()
+  private readonly sessionOperations = new Map<string, Promise<void>>()
   private clientElicitationSupport: ClientElicitationSupport = NO_CLIENT_ELICITATION_SUPPORT
 
   dispose(): void {
@@ -178,30 +178,49 @@ export class AtomicAcpAgent implements ACPAgent {
     return discovered
   }
 
-  private async restoreSession(
+  private async withSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionOperations.get(sessionId) ?? Promise.resolve()
+    const result = previous.then(operation)
+    const settled = result.then(
+      () => {},
+      () => {}
+    )
+    this.sessionOperations.set(sessionId, settled)
+    try {
+      return await result
+    } finally {
+      if (this.sessionOperations.get(sessionId) === settled) this.sessionOperations.delete(sessionId)
+    }
+  }
+
+  private restoreSession(sessionId: string): Promise<AtomicAcpSession> {
+    return this.withSessionOperation(sessionId, () => this.restoreSessionImpl(sessionId))
+  }
+
+  private async restoreSessionImpl(
     sessionId: string,
     opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; deferTitle?: boolean }
   ): Promise<AtomicAcpSession> {
     const existing = this.sessions.maybeGet(sessionId)
-    if (existing) return existing
-    const inFlight = this.restoringSessions.get(sessionId)
-    if (inFlight) return inFlight
-
-    const restoring = (async () => {
-      const stored = this.findStoredSession(sessionId, opts?.cwd)
-      if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
-      const cwd = opts?.cwd ?? stored.cwd
-      let proc: AtomicRpcProcess
-      try {
-        proc = await AtomicRpcProcess.spawn({
-          cwd,
-          sessionPath: stored.sessionFile,
-          atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
-        })
-      } catch (error) {
-        if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
-        throw error
-      }
+    if (existing) {
+      if (opts?.cwd && existing.cwd !== opts.cwd) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+      return existing
+    }
+    const stored = this.findStoredSession(sessionId, opts?.cwd)
+    if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+    const cwd = opts?.cwd ?? stored.cwd
+    let proc: AtomicRpcProcess
+    try {
+      proc = await AtomicRpcProcess.spawn({
+        cwd,
+        sessionPath: stored.sessionFile,
+        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
+      })
+    } catch (error) {
+      if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
+      throw error
+    }
+    try {
       let state: unknown = null
       try {
         state = await proc.getState()
@@ -222,12 +241,10 @@ export class AtomicAcpAgent implements ACPAgent {
       const title = readAtomicSessionTitle(stored.sessionFile)
       if (!opts?.deferTitle && title !== null) await session.publishTitle(title || null, null)
       return session
-    })()
-    this.restoringSessions.set(sessionId, restoring)
-    try {
-      return await restoring
-    } finally {
-      this.restoringSessions.delete(sessionId)
+    } catch (error) {
+      if (this.sessions.maybeGet(sessionId)?.proc === proc) this.sessions.close(sessionId)
+      else proc.dispose()
+      throw error
     }
   }
 
@@ -970,18 +987,17 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    return this.withSessionOperation(params.sessionId, () => this.loadSessionImpl(params))
+  }
+
+  private async loadSessionImpl(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
 
-    // If the client is re-loading a session that is already active, tear down the existing
-    // Atomic subprocess so we can start fresh and re-advertise commands reliably.
-    // (Some clients may call session/load when restoring from history.)
-    this.sessions.close(params.sessionId)
-
     this.lastSessionCwd = params.cwd
 
-    const session = await this.restoreSession(params.sessionId, {
+    const session = await this.restoreSessionImpl(params.sessionId, {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
       deferTitle: true
@@ -1161,6 +1177,10 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    return this.withSessionOperation(params.sessionId, () => this.deleteSessionImpl(params))
+  }
+
+  private async deleteSessionImpl(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
     const stored = this.store.get(params.sessionId)
     const discovered = findAtomicSession(params.sessionId)
     const sessionFile = stored?.sessionFile ?? discovered?.sessionFile
