@@ -96,6 +96,9 @@ test('AtomicAcpSession: emits tool_call + tool_call_update + completes', async (
   assert.equal((conn.updates[0]!.update as any).toolCallId, 't1')
   assert.equal((conn.updates[0]!.update as any).status, 'in_progress')
   assert.equal((conn.updates[0]!.update as any).locations, undefined)
+  assert.equal((conn.updates[0]!.update as { title?: string }).title, 'ls')
+  assert.deepEqual((conn.updates[0]!.update as { content?: unknown }).content, [{ type: 'terminal', terminalId: 't1' }])
+  assert.deepEqual(conn.updates[0]!.update._meta, { terminal_info: { terminal_id: 't1', cwd: process.cwd() } })
 
   assert.equal(conn.updates[1]!.update.sessionUpdate, 'tool_call_update')
   assert.equal((conn.updates[1]!.update as any).toolCallId, 't1')
@@ -104,6 +107,10 @@ test('AtomicAcpSession: emits tool_call + tool_call_update + completes', async (
   assert.equal(conn.updates[2]!.update.sessionUpdate, 'tool_call_update')
   assert.equal((conn.updates[2]!.update as any).toolCallId, 't1')
   assert.equal((conn.updates[2]!.update as any).status, 'completed')
+  assert.deepEqual(conn.updates[2]!.update._meta, {
+    terminal_output: { terminal_id: 't1', data: 'done' },
+    terminal_exit: { terminal_id: 't1', exit_code: 0, signal: null }
+  })
 })
 
 test('AtomicAcpSession: emits tool locations from Atomic path args', async () => {
@@ -125,7 +132,9 @@ test('AtomicAcpSession: emits tool locations from Atomic path args', async () =>
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
-  assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: `${process.cwd()}/src/acp/session.ts` }])
+  assert.deepEqual((conn.updates[0]!.update as any).locations, [
+    { path: join(process.cwd(), 'src', 'acp', 'session.ts') }
+  ])
 })
 
 test('AtomicAcpSession: emits agent_message_chunk for auto_retry_start with attempt/maxAttempts and rounded delay', async () => {
@@ -273,7 +282,7 @@ test('AtomicAcpSession: emits agent_message_chunk for auto_compaction_start', as
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Context nearing limit, running automatic compaction...' }
+    content: { type: 'text', text: 'Compacting context...' }
   })
 })
 
@@ -299,7 +308,7 @@ test('AtomicAcpSession: emits agent_message_chunk for auto_compaction_end', asyn
     sessionUpdate: 'agent_message_chunk',
     content: {
       type: 'text',
-      text: 'Automatic compaction finished; context was summarized to continue the session.'
+      text: 'Context compaction finished.'
     }
   })
 })
@@ -432,7 +441,7 @@ test('AtomicAcpSession: omits edit tool line when oldText matches multiple times
   assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: filePath }])
 })
 
-test('AtomicAcpSession: prompt resolves end_turn on agent_end', async () => {
+test('AtomicAcpSession: prompt resolves end_turn on agent_settled', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
 
@@ -449,6 +458,7 @@ test('AtomicAcpSession: prompt resolves end_turn on agent_end', async () => {
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   const reason = await p
   assert.equal(reason, 'end_turn')
 })
@@ -487,6 +497,7 @@ test('AtomicAcpSession: emits startup info only once when pre-prompt send wins',
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const reason = await p
   assert.equal(reason, 'end_turn')
@@ -523,6 +534,7 @@ test('AtomicAcpSession: emits startup info on first prompt if pre-prompt send di
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const reason = await p
   assert.equal(reason, 'end_turn')
@@ -546,13 +558,14 @@ test('AtomicAcpSession: cancel flips stopReason to cancelled', async () => {
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
   const reason = await p
 
   assert.equal(proc.abortCount, 1)
   assert.equal(reason, 'cancelled')
 })
 
-test('AtomicAcpSession: queues concurrent prompt and starts it after agent_end', async () => {
+test('AtomicAcpSession: queues concurrent prompt and starts it after agent_settled', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakeAtomicRpcProcess()
 
@@ -574,6 +587,7 @@ test('AtomicAcpSession: queues concurrent prompt and starts it after agent_end',
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const r1 = await first
   assert.equal(r1, 'end_turn')
@@ -584,6 +598,7 @@ test('AtomicAcpSession: queues concurrent prompt and starts it after agent_end',
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const r2 = await second
   assert.equal(r2, 'end_turn')
@@ -638,6 +653,7 @@ test('AtomicAcpSession: cancel clears queued prompts', async () => {
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const r1 = await first
   const r2 = await second
@@ -673,6 +689,7 @@ test('AtomicAcpSession: expands /command before sending to Atomic', async () => 
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })
   proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
 
   const reason = await p
   assert.equal(reason, 'end_turn')

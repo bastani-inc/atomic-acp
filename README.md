@@ -1,204 +1,234 @@
-# atomic-acp
+<h1 align="center">atomic-acp</h1>
 
-ACP ([Agent Client Protocol](https://agentclientprotocol.com/overview/introduction)) adapter for [`atomic`](https://github.com/bastani-inc/atomic) coding agent (fka shitty coding agent).
+<p align="center">
+  <b>Use the <a href="https://github.com/bastani-inc/atomic">Atomic</a> coding agent inside Zed and other editors that speak the Agent Client Protocol.</b>
+</p>
 
-`atomic-acp` communicates **ACP JSON-RPC 2.0 over stdio** to an ACP client (e.g. Zed editor) and spawns `atomic --mode rpc`, bridging requests/events between the two.
+<p align="center">
+  Chat with Atomic, watch its tool calls and diffs, switch models and thinking levels, and run Atomic workflows from your editor's agent panel.
+</p>
 
-## Status
+<p align="center">
+  <a href="#get-started"><b>Get started →</b></a>
+  &nbsp;·&nbsp;
+  <a href="#what-works">What works</a>
+  &nbsp;·&nbsp;
+  <a href="#workflows">Workflows</a>
+  &nbsp;·&nbsp;
+  <a href="#limitations">Limitations</a>
+  &nbsp;·&nbsp;
+  <a href="https://docs.bastani.ai/">Atomic docs</a>
+</p>
 
-This is an MVP-style adapter intended to be useful today and easy to iterate on. Some ACP features may be not implemented or are not supported (see [Limitations](#limitations)). Development is centered around [Zed](https://zed.dev) editor support, other clients may have varying levels of compatibility.
+<p align="center">
+  <a href="https://github.com/bastani-inc/atomic-acp/actions/workflows/test.yml"><img src="https://github.com/bastani-inc/atomic-acp/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="https://agentclientprotocol.com/"><img src="https://img.shields.io/badge/ACP-v1-0A7EA4" alt="ACP v1"></a>
+  <a href="https://docs.bastani.ai/"><img src="https://img.shields.io/badge/docs-atomic-blue" alt="Docs"></a>
+  <a href="https://discord.gg/9CvdXUGXR4"><img src="https://img.shields.io/badge/join%20community-discord-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
 
-Expect some minor breaking changes.
+## How it works
 
-## Features
+Your editor starts `atomic-acp` and talks to it over stdio using [ACP](https://agentclientprotocol.com/) JSON-RPC. For each chat session, `atomic-acp` starts its own `atomic --mode rpc` process and translates between the two protocols.
 
-- Streams assistant output as ACP `agent_message_chunk`
-- Maps Atomic tool execution to ACP `tool_call` / `tool_call_update`
-  - Tool call locations are surfaced when available for ACP clients that support opening the referenced file/context
-  - Relative file paths from Atomic are resolved against the session cwd before being emitted as ACP tool locations, which enables follow-along features in clients like Zed
-  - For `edit`, `atomic-acp` attempts to infer a 1-based line number from a unique `oldText` match in the pre-edit file snapshot and includes it in the emitted tool location when possible
-  - For `edit`, `atomic-acp` snapshots the file before the tool runs and emits an ACP **structured diff** (`oldText`/`newText`) on completion when possible
-- Session persistence
-  - Atomic stores its own sessions in `~/.atomic/agent/sessions/...`
-  - `atomic-acp` stores a small mapping file at `~/.atomic/atomic-acp/session-map.json` so `session/load` can reattach to a previous Atomic session file
-- Slash commands
-  - Loads file-based slash commands compatible with Atomic’s conventions
-  - Adds a small set of built-in commands for headless/editor usage
-  - Supports skill commands (if enabled in Atomic settings, they appear as `/skill:skill-name` in the ACP client)
-- Skills are loaded by Atomic directly and are available in ACP sessions
-- (Zed) `atomic-acp` emits “startup info” block into the session (Atomic version, context, skills, prompts, extensions - similar to `atomic` in the terminal). You can disable it by setting `quietStartup: true` in Atomic settings (`~/.atomic/agent/settings.json` or `<project>/.atomic/settings.json`). When `quietStartup` is enabled, `atomic-acp` will still emit a 'New version available' message if the installed Atomic version is outdated.
-- (Zed) Session history is supported in Zed starting with [`v0.225.0`](https://zed.dev/releases/preview/0.225.0). Session loading / history maps to Atomic's session files. Sessions can be resumed both in `atomic` and in the ACP client.
+```text
+Zed (ACP client) ⇄ atomic-acp ⇄ atomic --mode rpc
+```
 
-## Prerequisites
+Atomic reads files, edits code, and runs commands on your machine, exactly as it does in the terminal. Only open workspaces you trust.
 
-Make sure Atomic is installed
+## Get started
+
+### Prerequisites
+
+- Node.js 22 or newer (20 is the minimum).
+- Atomic installed and logged in to at least one model provider:
 
 ```bash
 npm install -g @bastani/atomic
+atomic   # sign in, then quit
 ```
 
-- Node.js 22+
-- `atomic` installed and available on your `PATH` (the adapter runs the `atomic` executable)
-- Configure Atomic separately for your model providers/API keys
+`atomic-acp` uses whatever `atomic` it finds on your `PATH`. Point it at a different binary with `ATOMIC_ACP_ATOMIC_COMMAND`.
 
-## Install
-
-### Add atomic-acp to your ACP client, e.g. [Zed](https://zed.dev/docs/agents/external-agents/)
-
-#### Using ACP Registry in Zed or other clients that support it:
-
-In Zed launch the registry with `zed: acp registry` command and select `Atomic ACP` adapter from the list. This will automatically add the agent server configuration to your `settings.json` and keep it up to date:
-
-```json
-  "agent_servers": {
-    "atomic-acp": {
-      "type": "registry",
-    },
-  }
-```
-
-#### Using with `npx` (no global install needed, always loads the latest version):
-
-Add the following to your Zed `settings.json`:
-
-```json
-  "agent_servers": {
-    "atomic": {
-      "type": "custom",
-      "command": "npx",
-      "args": ["-y", "atomic-acp"],
-      "env": {}
-    }
-  }
-```
-
-#### Global install
+### Install
 
 ```bash
 npm install -g atomic-acp
 ```
 
+To run from source instead, clone this repository and run `npm install && npm run build`. The entry point is `dist/index.js`.
+
+### Add it to Zed
+
+Open Zed's `settings.json` and add an agent server:
+
 ```json
+{
   "agent_servers": {
-    "atomic": {
+    "Atomic": {
       "type": "custom",
       "command": "atomic-acp",
       "args": [],
       "env": {}
     }
   }
+}
 ```
 
-#### From source
+Other ways to launch it:
 
-```bash
-npm install
-npm run build
+| Setup                     | `command`    | `args`                                  |
+| ------------------------- | ------------ | --------------------------------------- |
+| Global install            | `atomic-acp` | `[]`                                    |
+| No install, always latest | `npx`        | `["-y", "atomic-acp"]`                  |
+| Source checkout           | `node`       | `["/path/to/atomic-acp/dist/index.js"]` |
+
+Then open the agent panel, pick **Atomic**, and start a thread.
+
+If Atomic has no working provider login, Zed shows an **Authenticate** banner that opens Atomic in a terminal. You can run the same flow yourself with `atomic-acp --terminal-login`.
+
+## What works
+
+Chat and tools
+
+- Assistant text and reasoning stream into the thread as they arrive.
+- Tool calls appear with their status and file locations, so Zed can follow along as files are read and edited.
+- Edits and writes show a real diff of the file before and after the change, including Atomic's multi-file edits.
+- Bash commands render as terminal output.
+
+Sessions
+
+- Sessions are saved by Atomic in `~/.atomic/agent/sessions/`, so you can pick a thread back up in Zed's history or with `atomic --resume` in a terminal.
+- Threads get a title from your first message. Renaming in Atomic updates the title in the editor.
+- Deleting a thread in the editor deletes the Atomic session file.
+- Sessions survive an adapter restart. The next message restores the saved session.
+
+Models and context
+
+- The model and thinking-level pickers list what your Atomic setup offers, including model-specific levels such as `max`.
+- The context window indicator shows how full the current context is after each turn.
+
+Commands and dialogs
+
+- Atomic prompt templates, skills (`/skill:name`), and extension commands such as `/workflow` show up in the slash command menu.
+- When an Atomic extension or workflow asks you to pick, confirm, or type something, the editor shows a form. Clients without form support get a permission prompt for pick and confirm questions.
+- Extension notifications show up in the thread.
+
+Startup info
+
+- New threads open with a short summary of the Atomic version, skills, prompts, and extensions in use. Set `quietStartup: true` in your Atomic settings to hide it.
+
+## Workflows
+
+Atomic workflows run from the editor the same way they do in the terminal.
+
+```text
+/workflow list
+/workflow ralph prompt="Add rate limiting to the API"
+/workflow status
 ```
 
-Point your ACP client to the built `dist/index.js`:
+Workflows keep running in the background after the command returns, and you can keep chatting while they do. Progress notices, status lines, and the completion message stream into the thread as they happen. If a workflow stage needs your input, you'll get a form in the editor.
+
+Two extra commands read the workflow history Atomic keeps for the current project:
+
+| Command                   | Shows                                              |
+| ------------------------- | -------------------------------------------------- |
+| `/workflow-runs [status]` | Recent runs, optionally filtered by status         |
+| `/workflow-run <runId>`   | The saved summary for one run (may lag a live run) |
+
+## Slash commands
+
+On top of your Atomic prompts, skills, and extension commands, `atomic-acp` adds:
+
+| Command                        | What it does                                              |
+| ------------------------------ | --------------------------------------------------------- |
+| `/compact [instructions]`      | Compact the context, with optional instructions           |
+| `/autocompact on\|off\|toggle` | Turn automatic compaction on or off                       |
+| `/session`                     | Token, message, and cost stats plus the session file path |
+| `/name <name>`                 | Rename the session                                        |
+| `/export`                      | Export the session as HTML into the working directory     |
+| `/steering`, `/follow-up`      | Show or set how queued messages are delivered             |
+| `/changelog`                   | Show the installed Atomic changelog                       |
+
+Use the editor's model picker instead of `/model`, its thinking or mode picker instead of `/thinking`, and a new thread instead of `/clear`.
+
+Prompt templates load from `~/.atomic/agent/prompts/` and `<project>/.atomic/prompts/`.
+
+## Configuration
+
+Set these in the `env` object of your agent server entry:
+
+| Variable                             | Default                            | Purpose                                                                           |
+| ------------------------------------ | ---------------------------------- | --------------------------------------------------------------------------------- |
+| `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` (`atomic.cmd` on Windows) | Path or name of the Atomic executable. Arguments are not allowed here.            |
+| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset                              | Set to `true` to tell the editor it may attach file contents directly to prompts. |
 
 ```json
+{
   "agent_servers": {
-    "atomic": {
+    "Atomic": {
       "type": "custom",
-      "command": "node",
-      "args": ["/path/to/atomic-acp/dist/index.js"],
-      "env": {}
-    }
-  }
-```
-
-### Environment variables
-
-- `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT=true` advertises ACP `promptCapabilities.embeddedContext` support to the client.
-- Default: unset/any other value means `false`.
-- When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `atomic-acp` still degrades gracefully by converting them into plain-text prompt context.
-
-You can add the environment variable in the Zed settings with:
-
-```json
-  "agent_servers": {
-    "atomic": {
-      "type": "custom",
-      "command": "node",
-      "args": ["/path/to/atomic-acp/dist/index.js"],
+      "command": "atomic-acp",
+      "args": [],
       "env": {
-          "ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT": "true",
+        "ATOMIC_ACP_ATOMIC_COMMAND": "/path/to/atomic",
+        "ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT": "true"
       }
     }
   }
+}
 ```
 
-### Slash commands
+Everything else comes from Atomic itself. Provider logins, models, skills, and extensions use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
 
-`atomic-acp` supports slash commands:
+## Limitations
 
-#### 1) File-based commands (aka prompts)
-
-Loaded from:
-
-- User commands: top-level `*.md` files in `<Atomic agent dir>/prompts` (defaults to `~/.atomic/agent/prompts`, honors `ATOMIC_CODING_AGENT_DIR`)
-- Project commands: top-level `*.md` files in `<cwd>/.atomic/prompts`
-
-#### 2) Built-in commands
-
-- `/compact [instructions...]` – run Atomic compaction (optionally with custom instructions)
-- `/autocompact on|off|toggle` – toggle automatic compaction
-- `/export` – export the current session to HTML in the session `cwd`
-- `/session` – show session stats (tokens/messages/cost/session file)
-- `/name <name>` – set session display name
-- `/changelog` – print the installed Atomic changelog (best-effort)
-- `/steering` - maps to `atomic` Steering Mode, get/set
-- `/follow-up` - maps to `atomic` Follow-up Mode, get/set
-
-Other built-in commands:
-
-- `/model` - maps to model selector in Zed
-- `/thinking` - maps to 'mode' selector in Zed
-- `/clear` - not implemented (use ACP client 'new' command)
-
-#### 3) Skill commands
-
-- Skill commands can be enabled in Atomic settings and will appear in the slash command list in ACP client as `/skill:skill-name`.
-
-**Note**: Slash commands provided by Atomic extensions are not currently supported.
-
-## Authentication (ACP Registry support)
-
-This agent supports **Terminal Auth** for the [ACP Registry](https://agentclientprotocol.com/get-started/registry).
-In Zed, this will show an **Authenticate** banner that launches Atomic in a terminal.
-Launch Atomic in a terminal for interactive login/setup:
-
-```bash
-atomic-acp --terminal-login
-```
-
-Your ACP client can also invoke this automatically based on the agent's advertised `authMethods`.
+- `ask_user_question` isn't available over ACP because Atomic RPC mode can't carry its custom UI.
+- The editor's file and terminal APIs aren't used. Atomic reads, writes, and runs commands locally, and the editor displays the results.
+- MCP servers configured in the editor are ignored. Configure MCP servers in Atomic instead.
+- If you send several messages while Atomic is busy, they are queued and sent one at a time.
+- Zed is the client this is tested against. Other ACP clients should work but may render some updates differently.
 
 ## Development
 
 ```bash
 npm install
-npm run dev        # run from src via tsx
+npm run dev        # run from source with tsx
 npm run build
+npm test
 npm run lint
-npm run test
+npm run format
 ```
 
-Project layout:
+The ACP side lives in `src/acp/`, and the wrapper around the Atomic subprocess lives in `src/atomic-rpc/`.
 
-- `src/acp/*` – ACP server + translation layer
-- `src/atomic-rpc/*` – Atomic subprocess wrapper (RPC protocol)
+Two smoke scripts exercise a real Atomic install. They need a provider login and use real model tokens, so they aren't part of `npm test`:
 
-## Limitations
+```bash
+npm run build
+npm run smoke:e2e:atomic          # one prompt, checks streamed text and end_turn
+node scripts/smoke-workflow.mjs   # runs /workflow list over ACP
+```
 
-- No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). Atomic reads/writes and executes locally.
-- MCP servers are accepted in ACP params and stored in session state, but not wired through to Atomic in this adapter. If you use [Atomic MCP adapter](https://github.com/bastani-inc/atomic) it will be available in the ACP client.
-- Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
-- Concurrent ACP prompts are queued client-side and delivered one-at-a-time after Atomic finishes the active prompt.
-- ~~ACP clients don't yet suport session history, but ACP sessions from `atomic-acp` can be `/resume`d in Atomic directly~~
+`npm run` puts `node_modules/.bin` first on `PATH`, which can pick up an older Atomic installed as a dependency. Set `ATOMIC_ACP_ATOMIC_COMMAND=$(which atomic)` to test the one you have installed globally.
+
+## Releasing
+
+Releases go to npm through [trusted publishing](https://docs.npmjs.com/trusted-publishers), so there is no npm token in this repository.
+
+1. Merge a commit to `main` titled `Release X.Y.Z` (or `Release X.Y.Z-alpha.N`) that sets the same version in `package.json`.
+2. Push a tag named `X.Y.Z` on that commit.
+
+The [publish workflow](.github/workflows/publish.yml) checks the tag against the version and commit title, runs the test suite, stages a draft GitHub Release, publishes to npm from the `npm-publish` environment, and then publishes the release. Stable versions go to the `latest` tag on npm and alpha versions go to `next`.
+
+## Credits
+
+- [pi-acp](https://github.com/svkozak/pi-acp) by Sergii Kozak
+- [Pi](https://pi.dev)
 
 ## License
 
-MIT (see [LICENSE](LICENSE)).
+[MIT](LICENSE)

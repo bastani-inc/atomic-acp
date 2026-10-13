@@ -1,3 +1,8 @@
+import {
+  requestExtensionDialog,
+  NO_CLIENT_ELICITATION_SUPPORT,
+  type ClientElicitationSupport
+} from './elicitation/extension-dialog.js'
 import type {
   AgentSideConnection,
   ContentBlock,
@@ -15,26 +20,24 @@ import {
   AtomicRpcProcess,
   AtomicRpcSpawnError,
   type AtomicExtensionUiResponse,
-  type AtomicRpcEvent
+  type AtomicRpcEvent,
+  type AtomicSessionStats,
+  SESSION_STATS_TIMEOUT_MS
 } from '../atomic-rpc/process.js'
 import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/atomic-tools.js'
+import {
+  bashCommand,
+  bashExitCode,
+  bashOutputDelta,
+  bashResultText,
+  bashTerminalContent,
+  bashTerminalExitMeta,
+  bashTerminalInfoMeta,
+  bashTerminalOutputMeta,
+  isBashTool
+} from './translate/bash.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
-import {
-  cancelledAtomicQuestionnaireResult,
-  createAtomicQuestionElicitation,
-  isAtomicAskUserQuestionEvent,
-  NO_CLIENT_ELICITATION_SUPPORT,
-  normalizeAtomicQuestionnairePayload,
-  type AtomicAskUserQuestionEvent,
-  type AtomicQuestionnaireResult,
-  type ClientElicitationSupport
-} from './elicitation/atomic-questionnaire.js'
-import {
-  detectAtomicQuestionnaireRpcSupport,
-  NO_ATOMIC_QUESTIONNAIRE_RPC_SUPPORT,
-  type AtomicQuestionnaireRpcSupport
-} from './elicitation/atomic-questionnaire-support.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -43,7 +46,6 @@ type SessionCreateParams = {
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   atomicCommand?: string
   clientElicitationSupport?: ClientElicitationSupport
-  atomicQuestionnaireRpcSupport?: AtomicQuestionnaireRpcSupport
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -56,29 +58,17 @@ type PendingTurn = {
 type QueuedTurn = {
   message: string
   images: unknown[]
+  title?: string
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
 
-type PendingAtomicQuestion = {
-  atomicRequestId: string
-}
-
-type TurnTerminalReason = 'agent_end' | 'prompt_failure' | 'process_exit'
-
-function resolveSessionAtomicQuestionnaireRpcSupport(
-  base: AtomicQuestionnaireRpcSupport | undefined,
-  rpcCapabilities: unknown
-): AtomicQuestionnaireRpcSupport {
-  if (base?.supported && base.source === 'atomic_rpc_capability') return base
-
-  const detected = detectAtomicQuestionnaireRpcSupport({
-    atomicVersion: base?.atomicVersion,
-    rpcCapabilities: rpcCapabilities ?? undefined
-  })
-
-  if (detected.supported) return detected
-  return base ?? detected
+function toUsageUpdate(stats: AtomicSessionStats | null | undefined): SessionUpdate | null {
+  const used = stats?.contextUsage?.tokens
+  const size = stats?.contextUsage?.contextWindow
+  if (typeof used !== 'number' || !Number.isSafeInteger(used) || used < 0) return null
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) return null
+  return { sessionUpdate: 'usage_update', used, size }
 }
 
 function findUniqueLineNumber(text: string, needle: string): number | undefined {
@@ -97,15 +87,21 @@ function findUniqueLineNumber(text: string, needle: string): number | undefined 
   return line
 }
 
-function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
-  const path =
-    typeof (args as { path?: unknown } | null | undefined)?.path === 'string'
-      ? (args as { path: string }).path
-      : undefined
-  if (!path) return undefined
+function getMutationPaths(args: unknown): string[] {
+  const record = args as { path?: unknown; file_path?: unknown; input?: unknown } | null
+  const path = record?.path ?? record?.file_path
+  if (typeof path === 'string') return [path]
+  if (typeof record?.input !== 'string') return []
+  return [...record.input.matchAll(/^\[(.+)#[0-9a-fA-F]{4}\]\s*$/gm)].map(match => match[1]!)
+}
 
-  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path)
-  return [{ path: resolvedPath, ...(typeof line === 'number' ? { line } : {}) }]
+function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
+  const paths = getMutationPaths(args)
+  if (!paths.length) return undefined
+  return paths.map(path => ({
+    path: isAbsolute(path) ? path : resolvePath(cwd, path),
+    ...(typeof line === 'number' ? { line } : {})
+  }))
 }
 
 export class SessionManager {
@@ -182,11 +178,8 @@ export class SessionManager {
       proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      clientElicitationSupport: params.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport: resolveSessionAtomicQuestionnaireRpcSupport(
-        params.atomicQuestionnaireRpcSupport,
-        state
-      )
+      autoTitle: true,
+      clientElicitationSupport: params.clientElicitationSupport
     })
 
     this.sessions.set(sessionId, session)
@@ -214,8 +207,7 @@ export class SessionManager {
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      clientElicitationSupport: params.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport: params.atomicQuestionnaireRpcSupport
+      clientElicitationSupport: params.clientElicitationSupport
     })
 
     this.sessions.set(sessionId, session)
@@ -230,16 +222,14 @@ export class AtomicAcpSession {
 
   private startupInfo: string | null = null
   private startupInfoSent = false
+  private initialTitlePending: boolean
+  private lastPublishedTitle: string | null | undefined
+  private titleUpdateQueue: Promise<void> = Promise.resolve()
 
   readonly proc: AtomicRpcProcess
   private readonly conn: AgentSideConnection
   private readonly clientElicitationSupport: ClientElicitationSupport
-  private readonly atomicQuestionnaireRpcSupport: AtomicQuestionnaireRpcSupport
   private fileCommands: FileSlashCommand[]
-
-  private pendingAtomicQuestion: PendingAtomicQuestion | null = null
-  private unsupportedAtomicQuestionMessageSent = false
-  private activeTurnTerminalReason: TurnTerminalReason | null = null
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -253,19 +243,20 @@ export class AtomicAcpSession {
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
 
-  // Atomic can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
-  // The overall agent loop completes when `agent_end` is emitted.
+  // Retries and queued continuations may emit multiple agent_end events before settlement.
   private inAgentLoop = false
+  private backgroundTurn = false
 
-  // For ACP diff support: capture file contents before edits, then emit ToolCallContent {type:"diff"}.
-  // This is due to Atomic sending diff as a string as opposed to ACP expected diff format.
-  // Compatible format may need to be implemented in Atomic in the future.
-  private editSnapshots = new Map<string, { path: string; oldText: string }>()
+  private fileSnapshots = new Map<string, Array<{ path: string; oldText: string | null }>>()
+  private fileMutationToolCallIds = new Set<string>()
+  private bashToolCallIds = new Set<string>()
+  private bashOutputSnapshots = new Map<string, string>()
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  private pendingExtensionDialogs = new Map<string, () => Promise<void>>()
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -274,7 +265,7 @@ export class AtomicAcpSession {
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
     clientElicitationSupport?: ClientElicitationSupport
-    atomicQuestionnaireRpcSupport?: AtomicQuestionnaireRpcSupport
+    autoTitle?: boolean
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -282,9 +273,9 @@ export class AtomicAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.clientElicitationSupport = opts.clientElicitationSupport ?? NO_CLIENT_ELICITATION_SUPPORT
-    this.atomicQuestionnaireRpcSupport = opts.atomicQuestionnaireRpcSupport ?? NO_ATOMIC_QUESTIONNAIRE_RPC_SUPPORT
     this.fileCommands = opts.fileCommands ?? []
 
+    this.initialTitlePending = opts.autoTitle ?? false
     this.proc.onEvent(ev => this.handleAtomicEvent(ev))
     this.proc.onExit?.(err => this.handleAtomicExit(err))
   }
@@ -317,7 +308,7 @@ export class AtomicAcpSession {
     this.sendStartupInfoIfPending()
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async prompt(message: string, images: unknown[] = [], title?: string): Promise<StopReason> {
     // Keep a prompt-path fallback because some clients may ignore the best-effort
     // pre-prompt notification sent right after session/new.
     this.sendStartupInfoOnFirstPromptIfPending()
@@ -326,7 +317,7 @@ export class AtomicAcpSession {
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, title, resolve, reject }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -377,7 +368,7 @@ export class AtomicAcpSession {
       })
     }
 
-    await this.cancelPendingAtomicQuestion()
+    await this.cancelPendingExtensionDialogs()
 
     // Abort the currently running turn (if any). If nothing is running, this is a no-op.
     await this.proc.abort()
@@ -385,6 +376,50 @@ export class AtomicAcpSession {
 
   wasCancelRequested(): boolean {
     return this.cancelRequested
+  }
+
+  async setSessionName(name: string): Promise<void> {
+    return this.enqueueTitleUpdate(async () => {
+      await this.proc.setSessionName(name)
+      await this.publishTitle(name)
+    })
+  }
+
+  private enqueueTitleUpdate(update: () => Promise<void>): Promise<void> {
+    const result = this.titleUpdateQueue.then(update)
+    this.titleUpdateQueue = result.catch(() => {})
+    return result
+  }
+
+  publishTitle(title: string | null, updatedAt: string | null = new Date().toISOString()): Promise<void> {
+    if (this.lastPublishedTitle === title) return this.lastEmit
+    this.lastPublishedTitle = title
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      title,
+      ...(updatedAt ? { updatedAt } : {})
+    })
+    return this.lastEmit
+  }
+
+  private async maybeAutoTitle(title?: string): Promise<void> {
+    if (!this.initialTitlePending || !title) return
+    this.initialTitlePending = false
+    try {
+      await this.enqueueTitleUpdate(async () => {
+        const state = (await this.proc.getState()) as { sessionName?: unknown } | null
+        const currentTitle = typeof state?.sessionName === 'string' ? state.sessionName.trim() : ''
+        if (currentTitle) {
+          await this.publishTitle(currentTitle)
+          return
+        }
+        if (this.lastPublishedTitle !== undefined) return
+        await this.proc.setSessionName(title)
+        await this.publishTitle(title)
+      })
+    } catch {
+      // Naming is best-effort and must not fail the prompt.
+    }
   }
 
   private emit(update: SessionUpdate): void {
@@ -413,12 +448,58 @@ export class AtomicAcpSession {
     await this.lastEmit
   }
 
+  async publishContextUsage(): Promise<void> {
+    try {
+      if (typeof this.proc.getSessionStats === 'function') {
+        const update = toUsageUpdate(await this.proc.getSessionStats(SESSION_STATS_TIMEOUT_MS))
+        if (update) this.emit(update)
+      }
+    } catch {
+      // Context usage is auxiliary; it must not fail a prompt.
+    }
+    await this.flushEmits()
+  }
+
+  private emitBashToolCall(id: string, name: string, args: unknown, status: 'pending' | 'in_progress'): void {
+    const exists = this.currentToolCalls.has(id)
+    this.currentToolCalls.set(id, status)
+    this.bashToolCallIds.add(id)
+    this.emit({
+      sessionUpdate: exists ? 'tool_call_update' : 'tool_call',
+      toolCallId: id,
+      title: bashCommand(args) ?? name,
+      kind: 'execute',
+      status,
+      ...(!exists ? { content: bashTerminalContent(id), _meta: bashTerminalInfoMeta(id, this.cwd) } : {})
+    })
+  }
+
+  private emitBashOutput(
+    id: string,
+    result: unknown,
+    status: 'in_progress' | 'completed' | 'failed',
+    isError = false
+  ): void {
+    const text = bashResultText(result)
+    const delta = bashOutputDelta(this.bashOutputSnapshots.get(id) ?? '', text)
+    this.bashOutputSnapshots.set(id, text)
+    this.emit({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: id,
+      status,
+      _meta: {
+        ...(delta ? bashTerminalOutputMeta(id, delta) : {}),
+        ...(status !== 'in_progress' ? bashTerminalExitMeta(id, bashExitCode(result, isError)) : {})
+      }
+    })
+  }
+
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
-    this.activeTurnTerminalReason = null
-    this.inAgentLoop = false
+    // Independent workflow runs may still be streaming when a new prompt arrives.
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    void this.maybeAutoTitle(t.title)
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -427,17 +508,33 @@ export class AtomicAcpSession {
     })
 
     // Kick off Atomic, but completion is determined by Atomic events, not the RPC response.
-    // Important: Atomic may emit multiple `turn_end` events (e.g. when the model requests tools).
-    // The full prompt is finished when we see `agent_end`.
-    this.proc.prompt(t.message, t.images).catch(err => {
-      void this.finishActiveAndQueuedFromFailure(err)
-      void err
-    })
+    // Started or queued prompts finish at agent_settled; handled commands start no turn.
+    const pending = this.pendingTurn
+    this.proc
+      .prompt(t.message, t.images, 'followUp')
+      .then(async disposition => {
+        if (disposition !== 'handled' || this.pendingTurn !== pending) return
+        if (this.inAgentLoop) this.backgroundTurn = true
+        await this.publishContextUsage()
+        if (this.pendingTurn !== pending) return
+        pending.resolve(this.cancelRequested ? 'cancelled' : 'end_turn')
+        this.pendingTurn = null
+        const next = this.turnQueue.shift()
+        if (next) this.startTurn(next)
+        else {
+          this.emit({
+            sessionUpdate: 'session_info_update',
+            _meta: { atomicAcp: { queueDepth: 0, running: false } }
+          })
+        }
+      })
+      .catch(err => {
+        void this.finishActiveAndQueuedFromFailure(err)
+      })
   }
 
   private async finishActiveAndQueuedFromFailure(err: unknown): Promise<void> {
-    this.activeTurnTerminalReason ??= 'prompt_failure'
-    await this.cancelPendingAtomicQuestion()
+    await this.cancelPendingExtensionDialogs()
 
     await this.flushEmits()
     if (!this.pendingTurn && this.turnQueue.length === 0) return
@@ -465,130 +562,14 @@ export class AtomicAcpSession {
   }
 
   private handleAtomicExit(err: Error): void {
-    this.activeTurnTerminalReason ??= 'process_exit'
-    void this.cancelPendingAtomicQuestion()
+    void this.cancelPendingExtensionDialogs()
 
     if (!this.pendingTurn && this.turnQueue.length === 0) return
     void this.finishActiveAndQueuedFromFailure(err)
   }
 
-  private shouldCancelIncomingAtomicQuestion(): boolean {
-    return (
-      !this.pendingTurn ||
-      this.cancelRequested ||
-      this.activeTurnTerminalReason !== null ||
-      this.pendingAtomicQuestion !== null
-    )
-  }
-
-  private async handleAtomicAskUserQuestionEvent(ev: AtomicAskUserQuestionEvent): Promise<void> {
-    if (!this.atomicQuestionnaireRpcSupport.supported) {
-      this.emitUnsupportedAtomicQuestionnaireMessageOnce()
-      await this.writeUnsupportedAtomicQuestionnaireCancellation(ev.id)
-      return
-    }
-
-    if (this.shouldCancelIncomingAtomicQuestion()) {
-      await this.writeAtomicQuestionnaireResponse(ev.id, cancelledAtomicQuestionnaireResult())
-      return
-    }
-
-    const normalized = normalizeAtomicQuestionnairePayload(ev.questions)
-    if (!normalized.ok) {
-      this.emitAgentText(`Atomic could not present a structured question: ${normalized.message}`)
-      await this.writeAtomicQuestionnaireResponse(ev.id, normalized.result)
-      return
-    }
-
-    if (!this.clientElicitationSupport.form) {
-      this.emitAgentText(
-        'Atomic asked a structured question, but this ACP client does not advertise form elicitation. Continuing without an answer.'
-      )
-      await this.writeAtomicQuestionnaireResponse(ev.id, cancelledAtomicQuestionnaireResult('no_ui'))
-      return
-    }
-
-    const pending: PendingAtomicQuestion = {
-      atomicRequestId: ev.id
-    }
-    this.pendingAtomicQuestion = pending
-
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      _meta: { atomicAcp: { askUserQuestionPending: true, questionCount: normalized.questions.length } }
-    })
-
-    const questionnaireResponse = await createAtomicQuestionElicitation({
-      conn: this.conn,
-      sessionId: this.sessionId,
-      atomicRequestId: ev.id,
-      questions: normalized.questions
-    })
-
-    if (questionnaireResponse.invalidAcceptContent) {
-      this.emitAgentText(
-        'Atomic received an invalid structured question answer from the client. Continuing without an answer.'
-      )
-    }
-
-    await this.finishPendingAtomicQuestion(pending, questionnaireResponse.result)
-  }
-
-  private emitUnsupportedAtomicQuestionnaireMessageOnce(): void {
-    if (this.unsupportedAtomicQuestionMessageSent) return
-    this.unsupportedAtomicQuestionMessageSent = true
-
-    const version = this.atomicQuestionnaireRpcSupport.atomicVersion
-    const subject = version ? `Atomic v${version}` : 'This Atomic version'
-    const minimum = this.atomicQuestionnaireRpcSupport.minimumVersion
-      ? ` Atomic questionnaire RPC is only enabled for Atomic v${this.atomicQuestionnaireRpcSupport.minimumVersion}+ or an explicit RPC capability.`
-      : ''
-
-    this.emitAgentText(
-      `${subject} does not support ask_user_question questionnaire RPC over Atomic RPC.${minimum} Continuing without an answer.`
-    )
-  }
-
-  private async writeUnsupportedAtomicQuestionnaireCancellation(atomicRequestId: string): Promise<void> {
-    await this.writeExtensionUiResponse({
-      type: 'extension_ui_response',
-      id: atomicRequestId,
-      cancelled: true
-    })
-  }
-
-  private async cancelPendingAtomicQuestion(): Promise<void> {
-    const pendingQuestion = this.pendingAtomicQuestion
-    if (!pendingQuestion) return
-
-    await this.finishPendingAtomicQuestion(pendingQuestion, cancelledAtomicQuestionnaireResult())
-  }
-
-  private async finishPendingAtomicQuestion(
-    pending: PendingAtomicQuestion,
-    result: AtomicQuestionnaireResult
-  ): Promise<void> {
-    if (this.pendingAtomicQuestion !== pending) return
-
-    this.pendingAtomicQuestion = null
-
-    await this.writeAtomicQuestionnaireResponse(pending.atomicRequestId, result)
-
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      _meta: { atomicAcp: { askUserQuestionPending: false } }
-    })
-  }
-
-  private async writeAtomicQuestionnaireResponse(
-    atomicRequestId: string,
-    questionnaireResult: AtomicQuestionnaireResult
-  ): Promise<void> {
-    await this.writeExtensionUiResponse({
-      type: 'extension_ui_response',
-      id: atomicRequestId,
-      questionnaireResult
-    })
+  private async cancelPendingExtensionDialogs(): Promise<void> {
+    await Promise.all([...this.pendingExtensionDialogs.values()].map(cancel => cancel()))
   }
 
   private async writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {
@@ -599,17 +580,90 @@ export class AtomicAcpSession {
     }
   }
 
-  private handleAtomicEvent(ev: AtomicRpcEvent) {
-    if (isAtomicAskUserQuestionEvent(ev)) {
-      void this.handleAtomicAskUserQuestionEvent(ev).catch(() => {
-        // Keep Atomic event handling best-effort; never expose answer content in diagnostics.
+  private async handleExtensionUiRequest(ev: AtomicRpcEvent): Promise<void> {
+    const id = typeof ev.id === 'string' ? ev.id : null
+    if (!id) return
+    const method = ev.method
+    if (method === 'notify') {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: typeof ev.message === 'string' ? ev.message : 'Atomic notification' },
+        _meta: {
+          atomicAcp: {
+            notify: {
+              level: ev.notifyType === 'warning' || ev.notifyType === 'error' ? ev.notifyType : 'info'
+            }
+          }
+        }
       })
       return
     }
+    if (!['select', 'confirm', 'input', 'editor'].includes(String(method))) return
+    if (this.pendingExtensionDialogs.has(id)) return
+    if (!this.clientElicitationSupport.form && (method === 'input' || method === 'editor')) {
+      this.emitAgentText(`Atomic ${method} UI request is not supported in ACP yet; cancelling it.`)
+    }
+    if (this.cancelRequested) {
+      await this.writeExtensionUiResponse({ type: 'extension_ui_response', id, cancelled: true })
+      return
+    }
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const completion = Promise.resolve().then(async () => {
+      try {
+        const response = await requestExtensionDialog(
+          this.conn,
+          this.sessionId,
+          ev,
+          this.clientElicitationSupport.form,
+          controller.signal
+        )
+        if (timer) clearTimeout(timer)
+        await this.writeExtensionUiResponse(response)
+      } finally {
+        if (timer) clearTimeout(timer)
+        this.pendingExtensionDialogs.delete(id)
+      }
+    })
+    const cancel = async () => {
+      controller.abort()
+      await completion
+    }
+    this.pendingExtensionDialogs.set(id, cancel)
+    if (typeof ev.timeout === 'number' && Number.isFinite(ev.timeout) && ev.timeout >= 0) {
+      timer = setTimeout(() => controller.abort(), ev.timeout)
+    }
+    await completion
+  }
 
+  private handleAtomicEvent(ev: AtomicRpcEvent) {
     const type = String((ev as any).type ?? '')
 
     switch (type) {
+      case 'session_info_changed': {
+        const name = (ev as { name?: unknown }).name
+        if (typeof name === 'string' || name === undefined) void this.publishTitle(name ?? null)
+        break
+      }
+
+      case 'extension_ui_request': {
+        void this.handleExtensionUiRequest(ev)
+        if (ev.method === 'setStatus' && typeof ev.statusText === 'string' && ev.statusText) {
+          this.emitAgentText(ev.statusText)
+        } else if (ev.method === 'setWidget' && Array.isArray(ev.widgetLines)) {
+          const text = ev.widgetLines.filter((line): line is string => typeof line === 'string').join('\n')
+          if (text) this.emitAgentText(text)
+        }
+        break
+      }
+      case 'message_end': {
+        const message = ev.message as { role?: string; display?: boolean; content?: unknown } | undefined
+        if (message?.role === 'custom' && message.display === true) {
+          const text = typeof message.content === 'string' ? message.content : toolResultToText(message)
+          if (text) this.emitAgentText(text)
+        }
+        break
+      }
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
@@ -661,12 +715,14 @@ export class AtomicAcpSession {
             // IMPORTANT: never downgrade status (e.g. if we already marked in_progress via tool_execution_start).
             const status = existingStatus ?? 'pending'
 
-            if (!existingStatus) {
+            if (isBashTool(toolName)) {
+              this.emitBashToolCall(toolCallId, toolName, rawInput, status)
+            } else if (!existingStatus) {
               this.currentToolCalls.set(toolCallId, 'pending')
               this.emit({
                 sessionUpdate: 'tool_call',
                 toolCallId,
-                title: toolName,
+                title: toolTitle(toolName, rawInput),
                 kind: toToolKind(toolName),
                 status,
                 locations,
@@ -678,6 +734,9 @@ export class AtomicAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call_update',
                 toolCallId,
+                ...(toolName === 'workflow'
+                  ? { title: toolTitle(toolName, rawInput), kind: toToolKind(toolName) }
+                  : {}),
                 status,
                 locations,
                 rawInput
@@ -698,25 +757,26 @@ export class AtomicAcpSession {
         const args = (ev as any).args
         let line: number | undefined
 
-        if (toolName === 'ask_user_question' && !this.atomicQuestionnaireRpcSupport.supported) {
-          this.emitUnsupportedAtomicQuestionnaireMessageOnce()
+        if (isBashTool(toolName)) {
+          this.emitBashToolCall(toolCallId, toolName, args, 'in_progress')
+          break
         }
 
-        // Capture pre-edit file contents so we can emit a structured ACP diff on completion.
-        if (toolName === 'edit') {
-          const p = typeof args?.path === 'string' ? args.path : undefined
-          if (p) {
-            try {
-              const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p)
-              const oldText = readFileSync(abs, 'utf8')
-              this.editSnapshots.set(toolCallId, { path: p, oldText })
-
-              const needle = typeof args?.oldText === 'string' ? args.oldText : ''
-              line = findUniqueLineNumber(oldText, needle)
-            } catch {
-              // Ignore snapshot failures; we'll fall back to plain text output.
-            }
-          }
+        if (toolName === 'edit' || toolName === 'write') {
+          this.fileMutationToolCallIds.add(toolCallId)
+          const snapshots = getMutationPaths(args)
+            .map(path => {
+              try {
+                const oldText = readFileSync(resolvePath(this.cwd, path), 'utf8')
+                if (typeof args?.oldText === 'string') line = findUniqueLineNumber(oldText, args.oldText)
+                return { path, oldText }
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { path, oldText: null }
+                return null
+              }
+            })
+            .filter((snapshot): snapshot is { path: string; oldText: string | null } => snapshot !== null)
+          this.fileSnapshots.set(toolCallId, snapshots)
         }
 
         const locations = toToolCallLocations(args, this.cwd, line)
@@ -727,7 +787,7 @@ export class AtomicAcpSession {
           this.emit({
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toolName,
+            title: toolTitle(toolName, args),
             kind: toToolKind(toolName),
             status: 'in_progress',
             locations,
@@ -738,6 +798,7 @@ export class AtomicAcpSession {
           this.emit({
             sessionUpdate: 'tool_call_update',
             toolCallId,
+            ...(toolName === 'workflow' ? { title: toolTitle(toolName, args), kind: toToolKind(toolName) } : {}),
             status: 'in_progress',
             locations,
             rawInput: args
@@ -752,7 +813,11 @@ export class AtomicAcpSession {
         if (!toolCallId) break
 
         const partial = (ev as any).partialResult
-        const text = toolResultToText(partial)
+        if (this.bashToolCallIds.has(toolCallId)) {
+          this.emitBashOutput(toolCallId, partial, 'in_progress')
+          break
+        }
+        const text = this.fileMutationToolCallIds.has(toolCallId) ? '' : toolResultToText(partial)
 
         this.emit({
           sessionUpdate: 'tool_call_update',
@@ -761,7 +826,7 @@ export class AtomicAcpSession {
           content: text
             ? ([{ type: 'content', content: { type: 'text', text } }] satisfies ToolCallContent[])
             : undefined,
-          rawOutput: partial
+          ...(this.fileMutationToolCallIds.has(toolCallId) ? {} : { rawOutput: partial })
         })
         break
       }
@@ -772,32 +837,32 @@ export class AtomicAcpSession {
 
         const result = (ev as any).result
         const isError = Boolean((ev as any).isError)
+        if (this.bashToolCallIds.has(toolCallId)) {
+          this.emitBashOutput(toolCallId, result, isError ? 'failed' : 'completed', isError)
+          this.currentToolCalls.delete(toolCallId)
+          this.bashToolCallIds.delete(toolCallId)
+          this.bashOutputSnapshots.delete(toolCallId)
+          break
+        }
         const text = toolResultToText(result)
 
-        // If this was an edit and we captured a snapshot, emit a structured ACP diff.
-        // This enables clients like Zed to render an actual diff UI.
-        const snapshot = this.editSnapshots.get(toolCallId)
+        const snapshots = this.fileSnapshots.get(toolCallId) ?? []
         let content: ToolCallContent[] | undefined
-
-        if (!isError && snapshot) {
-          try {
-            const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path)
-            const newText = readFileSync(abs, 'utf8')
-            if (newText !== snapshot.oldText) {
-              content = [
-                {
-                  type: 'diff',
-                  path: snapshot.path,
-                  oldText: snapshot.oldText,
-                  newText
-                },
-                ...(text ? ([{ type: 'content', content: { type: 'text', text } }] as ToolCallContent[]) : [])
-              ]
+        if (!isError) {
+          for (const snapshot of snapshots) {
+            try {
+              const path = resolvePath(this.cwd, snapshot.path)
+              const newText = readFileSync(path, 'utf8')
+              if (newText !== snapshot.oldText) {
+                content ??= []
+                content.push({ type: 'diff', path, oldText: snapshot.oldText, newText })
+              }
+            } catch {
+              // Fall back to the tool's text when the file cannot be read.
             }
-          } catch {
-            // ignore; fall back to text only
           }
         }
+        const hasStructuredDiff = Boolean(content?.length)
 
         // Fallback: just text content.
         if (!content && text) {
@@ -809,11 +874,12 @@ export class AtomicAcpSession {
           toolCallId,
           status: isError ? 'failed' : 'completed',
           content,
-          rawOutput: result
+          ...(hasStructuredDiff ? {} : { rawOutput: result })
         })
 
         this.currentToolCalls.delete(toolCallId)
-        this.editSnapshots.delete(toolCallId)
+        this.fileSnapshots.delete(toolCallId)
+        this.fileMutationToolCallIds.delete(toolCallId)
         break
       }
 
@@ -833,23 +899,25 @@ export class AtomicAcpSession {
         break
       }
 
+      case 'compaction_start':
       case 'auto_compaction_start': {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Context nearing limit, running automatic compaction...'
+            text: 'Compacting context...'
           } satisfies ContentBlock
         })
         break
       }
 
+      case 'compaction_end':
       case 'auto_compaction_end': {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Automatic compaction finished; context was summarized to continue the session.'
+            text: 'Context compaction finished.'
           } satisfies ContentBlock
         })
         break
@@ -857,26 +925,33 @@ export class AtomicAcpSession {
 
       case 'agent_start': {
         this.inAgentLoop = true
+        this.backgroundTurn = !this.pendingTurn
         break
       }
 
       case 'turn_end': {
         // Atomic uses `turn_end` for sub-steps (e.g. tool_use) and will often start another turn.
-        // Do NOT resolve the ACP `session/prompt` here; wait for `agent_end`.
+        // Do NOT resolve the ACP prompt here; wait for agent_settled.
         break
       }
 
       case 'agent_end': {
-        this.activeTurnTerminalReason = 'agent_end'
+        this.inAgentLoop = false
+        break
+      }
 
-        // Cancel any pending Atomic questionnaire before resolving the ACP prompt.
-        // Late ACP elicitation responses will then fail the pending-object identity guard.
+      case 'agent_settled': {
+        if (this.backgroundTurn || !this.pendingTurn) {
+          this.backgroundTurn = false
+          this.inAgentLoop = false
+          break
+        }
         void (async () => {
-          await this.cancelPendingAtomicQuestion()
+          await this.cancelPendingExtensionDialogs()
 
           // Ensure all updates derived from Atomic events are delivered before we resolve
           // the ACP `session/prompt` request.
-          await this.flushEmits()
+          await this.publishContextUsage()
 
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)
@@ -922,6 +997,15 @@ function formatAutoRetryMessage(ev: AtomicRpcEvent): string {
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`
 }
 
+function toolTitle(name: string, input: unknown): string {
+  if (name !== 'workflow') return name
+  const args = input as { action?: unknown; workflow?: unknown; runId?: unknown } | undefined
+  const details = [args?.action ?? (args?.workflow ? 'run' : undefined), args?.workflow ?? args?.runId].filter(
+    value => typeof value === 'string' && value
+  )
+  return details.length ? `workflow: ${details.join(' ')}` : name
+}
+
 function toToolKind(toolName: string): ToolKind {
   switch (toolName) {
     case 'read':
@@ -930,10 +1014,7 @@ function toToolKind(toolName: string): ToolKind {
     case 'edit':
       return 'edit'
     case 'bash':
-      // Many ACP clients render `execute` tool calls only via the terminal APIs.
-      // Since this adapter lets Atomic execute locally (no client terminal delegation),
-      // we report bash as `other` so clients show inline text output blocks.
-      return 'other'
+      return 'execute'
     default:
       return 'other'
   }

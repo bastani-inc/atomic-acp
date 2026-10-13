@@ -8,6 +8,9 @@ class FakeSessions {
   get(_id: string) {
     return this.session
   }
+  maybeGet(id: string) {
+    return this.get(id)
+  }
 }
 
 test('AtomicAcpAgent: /steering reports current steeringMode', async () => {

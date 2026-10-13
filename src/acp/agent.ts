@@ -1,9 +1,22 @@
+import { renderWorkflowHistory } from './workflow-history.js'
+import {
+  bashCommand,
+  bashExitCode,
+  bashResultText,
+  bashTerminalContent,
+  bashTerminalExitMeta,
+  bashTerminalInfoMeta,
+  bashTerminalOutputMeta,
+  isBashTool
+} from './translate/bash.js'
 import {
   RequestError,
   type Agent as ACPAgent,
   type AgentSideConnection,
   type AuthenticateRequest,
   type CancelNotification,
+  type DeleteSessionRequest,
+  type DeleteSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -15,19 +28,22 @@ import {
   type PromptRequest,
   type PromptResponse,
   type SessionInfo,
+  type SessionConfigOption,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
   type StopReason
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
-import { SessionManager } from './session.js'
+import { SessionManager, type AtomicAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from '../atomic-rpc/command.js'
-import { AtomicRpcProcess } from '../atomic-rpc/process.js'
-import { listAtomicSessions, findAtomicSessionFile } from './atomic-sessions.js'
+import { AtomicRpcProcess, AtomicRpcSpawnError } from '../atomic-rpc/process.js'
+import { listAtomicSessions, findAtomicSession, readAtomicSessionTitle } from './atomic-sessions.js'
 import { normalizeAtomicAssistantText, normalizeAtomicMessageText } from './translate/atomic-messages.js'
 import { toolResultToText } from './translate/atomic-tools.js'
-import { promptToAtomicMessage } from './translate/prompt.js'
+import { promptToAtomicMessage, promptToSessionTitle } from './translate/prompt.js'
 import {
   loadSlashCommands,
   loadSlashCommandsFromAtomicGetCommands,
@@ -41,21 +57,20 @@ import {
   NO_CLIENT_ELICITATION_SUPPORT,
   readClientElicitationSupport,
   type ClientElicitationSupport
-} from './elicitation/atomic-questionnaire.js'
-import {
-  detectAtomicQuestionnaireRpcSupport,
-  type AtomicQuestionnaireRpcSupport
-} from './elicitation/atomic-questionnaire-support.js'
+} from './elicitation/extension-dialog.js'
 import { isAbsolute } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+const MODEL_CONFIG_ID = 'model'
+const THOUGHT_LEVEL_CONFIG_ID = 'thought_level'
 
 function builtinAvailableCommands(): AvailableCommand[] {
   return [
+    { name: 'workflow-runs', description: 'List retained workflow runs', input: { hint: '[status]' } },
+    { name: 'workflow-run', description: 'Show a workflow run summary', input: { hint: '<runId>' } },
     {
       name: 'compact',
       description: 'Manually compact the session context',
@@ -117,6 +132,7 @@ export class AtomicAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
+  private readonly sessionOperations = new Map<string, Promise<void>>()
   private clientElicitationSupport: ClientElicitationSupport = NO_CLIENT_ELICITATION_SUPPORT
 
   dispose(): void {
@@ -149,6 +165,77 @@ export class AtomicAcpAgent implements ACPAgent {
 
     this.store.delete(sessionId)
   }
+  private findStoredSession(sessionId: string, cwd?: string): { cwd: string; sessionFile: string } | null {
+    const stored = this.store.get(sessionId)
+    if (stored?.cwd && stored.sessionFile && (!cwd || stored.cwd === cwd)) return stored
+    const discovered = findAtomicSession(sessionId, cwd)
+    if (!discovered) return null
+    this.store.upsert({ sessionId, cwd: discovered.cwd, sessionFile: discovered.sessionFile })
+    return discovered
+  }
+
+  private async withSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionOperations.get(sessionId) ?? Promise.resolve()
+    const result = previous.then(operation)
+    const settled = result.then(
+      () => {},
+      () => {}
+    )
+    this.sessionOperations.set(sessionId, settled)
+    try {
+      return await result
+    } finally {
+      if (this.sessionOperations.get(sessionId) === settled) this.sessionOperations.delete(sessionId)
+    }
+  }
+
+  private restoreSession(sessionId: string): Promise<AtomicAcpSession> {
+    return this.withSessionOperation(sessionId, () => this.restoreSessionImpl(sessionId))
+  }
+
+  private async restoreSessionImpl(
+    sessionId: string,
+    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; deferTitle?: boolean }
+  ): Promise<AtomicAcpSession> {
+    const existing = this.sessions.maybeGet(sessionId)
+    if (existing) {
+      if (opts?.cwd && existing.cwd !== opts.cwd) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+      return existing
+    }
+    const stored = this.findStoredSession(sessionId, opts?.cwd)
+    if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+    const cwd = opts?.cwd ?? stored.cwd
+    let proc: AtomicRpcProcess
+    try {
+      proc = await AtomicRpcProcess.spawn({
+        cwd,
+        sessionPath: stored.sessionFile,
+        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
+      })
+    } catch (error) {
+      if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
+      throw error
+    }
+    try {
+      const session = this.sessions.getOrCreate(sessionId, {
+        cwd,
+        mcpServers: opts?.mcpServers ?? [],
+        conn: this.conn,
+        proc,
+        fileCommands: loadSlashCommands(cwd),
+        clientElicitationSupport: this.clientElicitationSupport
+      })
+      this.lastSessionCwd = cwd
+      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
+      const title = readAtomicSessionTitle(stored.sessionFile)
+      if (!opts?.deferTitle && title !== null) await session.publishTitle(title || null, null)
+      return session
+    } catch (error) {
+      if (this.sessions.maybeGet(sessionId)?.proc === proc) this.sessions.close(sessionId)
+      else proc.dispose()
+      throw error
+    }
+  }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     this.clientElicitationSupport = readClientElicitationSupport(params)
@@ -178,9 +265,8 @@ export class AtomicAcpAgent implements ACPAgent {
           embeddedContext: process.env.ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT === 'true'
         },
         sessionCapabilities: {
-          // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
-          // Enables a native session picker in clients that support it.
-          list: {}
+          list: {},
+          delete: {}
         }
       }
     }
@@ -195,7 +281,6 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
-    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport()
 
     // Atomic doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
@@ -204,8 +289,7 @@ export class AtomicAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
-      clientElicitationSupport: this.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport
+      clientElicitationSupport: this.clientElicitationSupport
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -283,8 +367,15 @@ export class AtomicAcpAgent implements ACPAgent {
       session.setFileCommands(loadSlashCommandsFromAtomicGetCommands(atomicCommands))
     }
 
-    const models = await getModelState(session.proc, { state, availableModels })
-    const thinking = await getThinkingState(session.proc, { state })
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
+    try {
+      if (stateErr) throw stateErr
+      configuration = await getSessionConfiguration(session.proc, { state, availableModels })
+    } catch (err) {
+      this.cleanupFailedNewSession(session.sessionId, state)
+      throw maybeAuthRequiredError(err) ?? RequestError.internalError({}, String(err))
+    }
+    const { configOptions, models, modes } = configuration
 
     const quietStartup = getQuietStartup(params.cwd)
     const updateNotice = buildUpdateNotice()
@@ -313,8 +404,9 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const response = {
       sessionId: session.sessionId,
+      configOptions,
       models,
-      modes: thinking,
+      modes,
       _meta: {
         atomicAcp: {
           startupInfo: preludeText || null
@@ -331,18 +423,19 @@ export class AtomicAcpAgent implements ACPAgent {
     // So we must send this *after* the session/new response has been delivered.
     setTimeout(() => {
       void (async () => {
+        await session.publishContextUsage()
         try {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
+              availableCommands: mergeCommands(builtinAvailableCommands(), commands)
             }
           })
           return
@@ -354,7 +447,7 @@ export class AtomicAcpAgent implements ACPAgent {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
+            availableCommands: mergeCommands(builtinAvailableCommands(), toAvailableCommands(fileCommands))
           }
         })
       })()
@@ -370,7 +463,7 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    const session = this.sessions.get(params.sessionId)
+    const session = await this.restoreSession(params.sessionId)
 
     const { message, images } = promptToAtomicMessage(params.prompt)
 
@@ -382,6 +475,31 @@ export class AtomicAcpAgent implements ACPAgent {
       const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)
       const argsString = space === -1 ? '' : trimmed.slice(space + 1)
       const args = parseCommandArgs(argsString)
+
+      if (cmd === 'workflow-runs' || cmd === 'workflow-run') {
+        let text: string
+        if (args.length > 1 || (cmd === 'workflow-run' && !args[0])) {
+          text = cmd === 'workflow-run' ? 'Usage: /workflow-run <runId>' : 'Usage: /workflow-runs [status]'
+        } else {
+          try {
+            const data =
+              cmd === 'workflow-runs'
+                ? await session.proc.listWorkflowRuns(args[0])
+                : await session.proc.getWorkflowRunSummary(args[0]!)
+            text = renderWorkflowHistory(data, cmd === 'workflow-runs')
+          } catch (error) {
+            text = `Could not read workflow history: ${error instanceof Error ? error.message : String(error)}`
+          }
+        }
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text }
+          }
+        })
+        return { stopReason: 'end_turn' }
+      }
 
       if (cmd === 'compact') {
         const customInstructions = args.join(' ').trim() || undefined
@@ -458,7 +576,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         try {
-          await session.proc.setSessionName(name)
+          await session.setSessionName(name)
         } catch (e: any) {
           const msg = String(e?.message ?? e)
           const hint = /set_session_name/i.test(msg)
@@ -474,15 +592,6 @@ export class AtomicAcpAgent implements ACPAgent {
           })
           return { stopReason: 'end_turn' }
         }
-
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'session_info_update',
-            title: name,
-            updatedAt: new Date().toISOString()
-          }
-        })
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -812,7 +921,7 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    const result = await session.prompt(message, images, promptToSessionTitle(params.prompt) ?? undefined)
 
     // ACP StopReason does not include "error"; if Atomic fails we map to end_turn for now,
     // unless we know this was a cancellation.
@@ -823,7 +932,8 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
+    const session = this.sessions.maybeGet(params.sessionId)
+    if (!session) return
     await session.cancel()
   }
 
@@ -864,53 +974,40 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    return this.withSessionOperation(params.sessionId, () => this.loadSessionImpl(params))
+  }
+
+  private async loadSessionImpl(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
 
-    // If the client is re-loading a session that is already active, tear down the existing
-    // Atomic subprocess so we can start fresh and re-advertise commands reliably.
-    // (Some clients may call session/load when restoring from history.)
-    this.sessions.close(params.sessionId)
-
     this.lastSessionCwd = params.cwd
 
-    // MVP: ignore mcpServers.
-    // Prefer ACP-created mapping first (fast path), otherwise scan Atomic sessions dir.
-    const stored = this.store.get(params.sessionId)
-    const sessionFile =
-      stored?.cwd === params.cwd ? stored.sessionFile : findAtomicSessionFile(params.sessionId, params.cwd)
-
-    if (!sessionFile) {
-      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
-    }
-
-    // Spawn Atomic and point it directly at the session file.
-    let proc: AtomicRpcProcess
-    try {
-      proc = await AtomicRpcProcess.spawn({
-        cwd: params.cwd,
-        sessionPath: sessionFile,
-        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
-      })
-    } catch (e: any) {
-      if (e?.name === 'AtomicRpcSpawnError') {
-        throw RequestError.internalError({ code: e?.code }, String(e?.message ?? e))
-      }
-      throw e
-    }
-
+    const session = await this.restoreSessionImpl(params.sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers,
+      deferTitle: true
+    })
+    const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     let atomicCommands: any = null
     let atomicCommandsErr: unknown = null
     let state: any = null
 
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
     try {
-      state = (await proc.getState()) as any
-    } catch {
-      state = null
+      state = await proc.getState()
+      configuration = await getSessionConfiguration(proc, { state })
+    } catch (err) {
+      this.sessions.close(params.sessionId)
+      throw err
     }
+    const { configOptions, models, modes } = configuration
+    const stored = this.store.get(params.sessionId)
+    const title = stored?.sessionFile ? readAtomicSessionTitle(stored.sessionFile) : null
+    if (title !== null) await session.publishTitle(title || null, null)
 
     try {
       if (typeof proc.getCommands === 'function') atomicCommands = (await proc.getCommands()) as any
@@ -918,28 +1015,11 @@ export class AtomicAcpAgent implements ACPAgent {
       atomicCommandsErr = err
     }
 
-    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport(state)
-
-    const session = this.sessions.getOrCreate(params.sessionId, {
-      cwd: params.cwd,
-      mcpServers: params.mcpServers,
-      conn: this.conn,
-      proc,
-      fileCommands: atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands,
-      clientElicitationSupport: this.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport
-    })
+    session.setFileCommands(atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands)
 
     // Policy: within a single ACP connection (one Zed window), keep only one live Atomic subprocess.
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
     ;(this.sessions as any).closeAllExcept?.(session.sessionId)
-
-    // (Optional) ensure mapping stays fresh.
-    this.store.upsert({
-      sessionId: params.sessionId,
-      cwd: params.cwd,
-      sessionFile
-    })
 
     // Replay full conversation history.
     const data = (await proc.getMessages()) as any
@@ -979,6 +1059,35 @@ export class AtomicAcpAgent implements ACPAgent {
         const toolCallId = String((m as any)?.toolCallId ?? crypto.randomUUID())
         const isError = Boolean((m as any)?.isError)
 
+        if (isBashTool(toolName)) {
+          const text = bashResultText(m)
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId,
+              title: bashCommand(m) ?? toolName,
+              kind: 'execute',
+              status: 'in_progress',
+              content: bashTerminalContent(toolCallId),
+              _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
+            }
+          })
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId,
+              status: isError ? 'failed' : 'completed',
+              _meta: {
+                ...(text ? bashTerminalOutputMeta(toolCallId, text) : {}),
+                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
+              }
+            }
+          })
+          continue
+        }
+
         // Create a synthetic ACP tool call to render historic tool usage.
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1007,12 +1116,10 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const models = await getModelState(proc, { state })
-    const thinking = await getThinkingState(proc, { state })
-
     const response = {
+      configOptions,
       models,
-      modes: thinking,
+      modes,
       _meta: {
         atomicAcp: {
           startupInfo: null
@@ -1023,18 +1130,19 @@ export class AtomicAcpAgent implements ACPAgent {
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
       void (async () => {
+        await session.publishContextUsage()
         try {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
           const { commands } = toAvailableCommandsFromAtomicGetCommands(atomicCommands, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
+              availableCommands: mergeCommands(builtinAvailableCommands(), commands)
             }
           })
           return
@@ -1046,7 +1154,7 @@ export class AtomicAcpAgent implements ACPAgent {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
+            availableCommands: mergeCommands(builtinAvailableCommands(), toAvailableCommands(fileCommands))
           }
         })
       })()
@@ -1055,70 +1163,65 @@ export class AtomicAcpAgent implements ACPAgent {
     return response
   }
 
-  async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
+  async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    return this.withSessionOperation(params.sessionId, () => this.deleteSessionImpl(params))
+  }
 
-    // Accept either:
-    //  - "provider/model" (preferred, matches how we advertise)
-    //  - "model" (fallback, we try to resolve via available models)
-    let provider: string | null = null
-    let modelId: string | null = null
-
-    if (params.modelId.includes('/')) {
-      const [p, ...rest] = params.modelId.split('/')
-      provider = p
-      modelId = rest.join('/')
-    } else {
-      modelId = params.modelId
-    }
-
-    if (!provider) {
-      const data = (await session.proc.getAvailableModels()) as any
-      const models: any[] = Array.isArray(data?.models) ? data.models : []
-      const found = models.find(m => String(m?.id) === modelId)
-      if (found) {
-        provider = String(found.provider)
-        modelId = String(found.id)
+  private async deleteSessionImpl(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    const stored = this.store.get(params.sessionId)
+    const discovered = findAtomicSession(params.sessionId)
+    const sessionFile = stored?.sessionFile ?? discovered?.sessionFile
+    this.sessions.close(params.sessionId)
+    if (sessionFile) {
+      try {
+        unlinkSync(sessionFile)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
     }
+    this.store.delete(params.sessionId)
+    return {}
+  }
 
-    if (!provider || !modelId) {
-      throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`)
-    }
-
-    await session.proc.setModel(provider, modelId)
+  async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
+    const session = await this.restoreSession(params.sessionId)
+    await setSessionModel(session.proc, params.modelId)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    await session.publishContextUsage()
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    const session = this.sessions.get(params.sessionId)
-
-    const mode = String(params.modeId)
-    if (!isThinkingLevel(mode)) {
-      throw RequestError.invalidParams(`Unknown modeId: ${mode}`)
+    const session = await this.restoreSession(params.sessionId)
+    if (typeof params.modeId !== 'string' || params.modeId.length === 0) {
+      throw RequestError.invalidParams('Expected nonempty string modeId')
     }
-
-    await session.proc.setThinkingLevel(mode)
-
-    // Let the client know the current mode changed (keeps the dropdown in sync).
-    void this.conn.sessionUpdate({
-      sessionId: session.sessionId,
-      update: {
-        sessionUpdate: 'current_mode_update',
-        currentModeId: mode
-      }
-    })
-
+    await session.proc.setThinkingLevel(params.modeId)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
     return {}
   }
-}
 
-function isThinkingLevel(x: string): x is ThinkingLevel {
-  return x === 'off' || x === 'minimal' || x === 'low' || x === 'medium' || x === 'high' || x === 'xhigh'
+  async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+    const session = await this.restoreSession(params.sessionId)
+    if (typeof params.value !== 'string') {
+      throw RequestError.invalidParams(`Expected string value for config option: ${params.configId}`)
+    }
+    if (params.configId === MODEL_CONFIG_ID) {
+      await setSessionModel(session.proc, params.value)
+    } else if (params.configId === THOUGHT_LEVEL_CONFIG_ID) {
+      if (params.value.length === 0) throw RequestError.invalidParams('Expected nonempty thinking level')
+      await session.proc.setThinkingLevel(params.value)
+    } else {
+      throw RequestError.invalidParams(`Unknown config option: ${params.configId}`)
+    }
+    const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    if (params.configId === MODEL_CONFIG_ID) await session.publishContextUsage()
+    return { configOptions }
+  }
 }
 
 async function getThinkingState(
   proc: AtomicRpcProcess,
-  pre?: { state?: any | null }
+  pre?: { state?: unknown }
 ): Promise<{
   availableModes: Array<{
     id: string
@@ -1127,23 +1230,12 @@ async function getThinkingState(
   }>
   currentModeId: string
 }> {
-  // Ask Atomic for current thinking level.
-  let current: ThinkingLevel = 'medium'
-
-  const state =
-    pre?.state ??
-    (await (async () => {
-      try {
-        return (await proc.getState()) as any
-      } catch {
-        return null
-      }
-    })())
-
-  const tl = typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : null
-  if (tl && isThinkingLevel(tl)) current = tl
-
-  const available: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const state = pre?.state ?? (await proc.getState())
+  const available = await proc.getAvailableThinkingLevels()
+  const current = state && typeof state === 'object' && 'thinkingLevel' in state ? state.thinkingLevel : undefined
+  if (typeof current !== 'string' || current.length === 0 || !available.includes(current)) {
+    throw new Error('Atomic returned a thinking level absent from available levels')
+  }
 
   return {
     currentModeId: current,
@@ -1153,6 +1245,82 @@ async function getThinkingState(
       description: null
     }))
   }
+}
+
+async function getSessionConfiguration(proc: AtomicRpcProcess, pre?: { state?: unknown; availableModels?: unknown }) {
+  const state = pre?.state ?? (await proc.getState())
+  const [models, modes] = await Promise.all([getModelState(proc, { ...pre, state }), getThinkingState(proc, { state })])
+  const configOptions: SessionConfigOption[] = [
+    {
+      type: 'select',
+      id: THOUGHT_LEVEL_CONFIG_ID,
+      category: 'thought_level',
+      name: 'Thinking',
+      description: 'Set the reasoning effort for this session',
+      currentValue: modes.currentModeId,
+      options: modes.availableModes.map(mode => ({
+        value: mode.id,
+        name: mode.name,
+        description: mode.description ?? null
+      }))
+    }
+  ]
+  if (models?.availableModels.length) {
+    configOptions.unshift({
+      type: 'select',
+      id: MODEL_CONFIG_ID,
+      category: 'model',
+      name: 'Model',
+      description: 'Select the model for this session',
+      currentValue: models.currentModelId,
+      options: models.availableModels.map(model => ({
+        value: model.modelId,
+        name: model.name,
+        description: model.description ?? null
+      }))
+    })
+  }
+  return { configOptions, models, modes }
+}
+
+async function emitConfigOptionsUpdate(
+  conn: AgentSideConnection,
+  sessionId: string,
+  proc: AtomicRpcProcess
+): Promise<SessionConfigOption[]> {
+  const { configOptions, modes } = await getSessionConfiguration(proc)
+  await conn.sessionUpdate({
+    sessionId,
+    update: { sessionUpdate: 'current_mode_update', currentModeId: modes.currentModeId }
+  })
+  await conn.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions } })
+  return configOptions
+}
+
+async function setSessionModel(proc: AtomicRpcProcess, requestedModelId: string): Promise<void> {
+  let provider: string | null = null
+  let modelId = requestedModelId
+  if (requestedModelId.includes('/')) {
+    const [candidateProvider, ...rest] = requestedModelId.split('/')
+    provider = candidateProvider
+    modelId = rest.join('/')
+  } else {
+    const data = await proc.getAvailableModels()
+    const models = data && typeof data === 'object' && 'models' in data && Array.isArray(data.models) ? data.models : []
+    const found = models.find((model: unknown): model is { provider: string; id: string } =>
+      Boolean(
+        model &&
+        typeof model === 'object' &&
+        'id' in model &&
+        model.id === modelId &&
+        'provider' in model &&
+        typeof model.provider === 'string'
+      )
+    )
+    if (found) provider = found.provider
+  }
+  if (!provider || !modelId) throw RequestError.invalidParams(`Unknown modelId: ${requestedModelId}`)
+  await proc.setModel(provider, modelId)
 }
 
 async function getModelState(
@@ -1268,17 +1436,6 @@ function getAtomicVersionOutput(): string {
     shell: shouldUseShellForAtomicCommand(cmd)
   })
   return String(atomicVersion.stdout ?? '').trim() || String(atomicVersion.stderr ?? '').trim()
-}
-
-function detectInstalledAtomicQuestionnaireRpcSupport(rpcCapabilities?: unknown): AtomicQuestionnaireRpcSupport {
-  let versionOutput: string | null = null
-  try {
-    versionOutput = getAtomicVersionOutput()
-  } catch {
-    versionOutput = null
-  }
-
-  return detectAtomicQuestionnaireRpcSupport({ versionOutput, rpcCapabilities: rpcCapabilities ?? undefined })
 }
 
 function buildUpdateNotice(): string | null {
@@ -1430,22 +1587,18 @@ function buildStartupInfo(opts: {
     // ignore
   }
 
-  // Also show npm packages from Atomic settings (best-effort)
-  try {
-    const settingsPath = join(agentDir, 'settings.json')
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as any
-    const pkgs: string[] = Array.isArray(settings?.packages) ? settings.packages : []
-    for (const pkg of pkgs) {
-      const s = String(pkg)
-      if (s.startsWith('npm:')) {
-        // Render a two-line bullet structure using markdown indentation.
-        extItems.push(`${s}\n  - index.ts`)
-      } else {
-        extItems.push(s)
+  for (const settingsPath of [join(agentDir, 'settings.json'), join(opts.cwd, '.atomic', 'settings.json')]) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { packages?: unknown }
+      const packages: unknown[] = Array.isArray(settings.packages) ? settings.packages : []
+      for (const pkg of packages) {
+        const source = typeof pkg === 'string' ? pkg : (pkg as { source?: unknown } | null)?.source
+        if (typeof source !== 'string') continue
+        extItems.push(source.startsWith('npm:') ? `${source}\n  - index.ts` : source)
       }
+    } catch {
+      // Ignore missing or invalid settings.
     }
-  } catch {
-    // ignore
   }
 
   addSection('Extensions', extItems)

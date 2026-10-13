@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { TransformStream } from 'node:stream/web'
 import { AgentSideConnection, ClientSideConnection } from '@agentclientprotocol/sdk'
 
@@ -98,7 +98,7 @@ test('AtomicAcpAgent: listSessions lists Atomic sessions and loadSession replays
     ;(AtomicRpcProcess as any).spawn = async (params: any) => {
       // ensure loadSession resolves to some jsonl that ends with our expected filename
       assert.ok(typeof params.sessionPath === 'string')
-      assert.ok(params.sessionPath.endsWith('/0000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl'))
+      assert.ok(basename(params.sessionPath) === '0000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl')
 
       return {
         onEvent: () => () => {
@@ -111,6 +111,7 @@ test('AtomicAcpAgent: listSessions lists Atomic sessions and loadSession replays
           ]
         }),
         getAvailableModels: async () => ({ models: [] }),
+        getAvailableThinkingLevels: async () => ['medium'],
         getState: async () => ({ thinkingLevel: 'medium' })
       } as any
     }

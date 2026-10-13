@@ -36,7 +36,9 @@ test('AtomicAcpAgent: quietStartup=true disables startup info generation/emissio
     const session = {
       sessionId: 's1',
       cwd: process.cwd(),
+      async publishContextUsage() {},
       proc: {
+        getAvailableThinkingLevels: async () => ['medium'],
         async getAvailableModels() {
           return { models: [{ provider: 'test', id: 'model', name: 'model' }] }
         },
@@ -95,7 +97,9 @@ test('AtomicAcpAgent: startup info reads prompts from ATOMIC_CODING_AGENT_DIR', 
     const session = {
       sessionId: 's1',
       cwd: process.cwd(),
+      async publishContextUsage() {},
       proc: {
+        getAvailableThinkingLevels: async () => ['medium'],
         async getAvailableModels() {
           return { models: [{ provider: 'test', id: 'model', name: 'model' }] }
         },
