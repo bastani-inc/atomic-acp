@@ -56,6 +56,7 @@ type PendingTurn = {
 type QueuedTurn = {
   message: string
   images: unknown[]
+  title?: string
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
@@ -64,7 +65,7 @@ type PendingAtomicQuestion = {
   atomicRequestId: string
 }
 
-type TurnTerminalReason = 'agent_end' | 'prompt_failure' | 'process_exit'
+type TurnTerminalReason = 'agent_settled' | 'prompt_failure' | 'process_exit'
 
 function resolveSessionAtomicQuestionnaireRpcSupport(
   base: AtomicQuestionnaireRpcSupport | undefined,
@@ -182,6 +183,7 @@ export class SessionManager {
       proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
+      autoTitle: true,
       clientElicitationSupport: params.clientElicitationSupport,
       atomicQuestionnaireRpcSupport: resolveSessionAtomicQuestionnaireRpcSupport(
         params.atomicQuestionnaireRpcSupport,
@@ -230,6 +232,9 @@ export class AtomicAcpSession {
 
   private startupInfo: string | null = null
   private startupInfoSent = false
+  private initialTitlePending: boolean
+  private lastPublishedTitle: string | null | undefined
+  private titleUpdateQueue: Promise<void> = Promise.resolve()
 
   readonly proc: AtomicRpcProcess
   private readonly conn: AgentSideConnection
@@ -253,8 +258,7 @@ export class AtomicAcpSession {
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
 
-  // Atomic can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
-  // The overall agent loop completes when `agent_end` is emitted.
+  // Retries and queued continuations may emit multiple agent_end events before settlement.
   private inAgentLoop = false
 
   // For ACP diff support: capture file contents before edits, then emit ToolCallContent {type:"diff"}.
@@ -275,6 +279,7 @@ export class AtomicAcpSession {
     fileCommands?: FileSlashCommand[]
     clientElicitationSupport?: ClientElicitationSupport
     atomicQuestionnaireRpcSupport?: AtomicQuestionnaireRpcSupport
+    autoTitle?: boolean
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -285,6 +290,7 @@ export class AtomicAcpSession {
     this.atomicQuestionnaireRpcSupport = opts.atomicQuestionnaireRpcSupport ?? NO_ATOMIC_QUESTIONNAIRE_RPC_SUPPORT
     this.fileCommands = opts.fileCommands ?? []
 
+    this.initialTitlePending = opts.autoTitle ?? false
     this.proc.onEvent(ev => this.handleAtomicEvent(ev))
     this.proc.onExit?.(err => this.handleAtomicExit(err))
   }
@@ -317,7 +323,7 @@ export class AtomicAcpSession {
     this.sendStartupInfoIfPending()
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async prompt(message: string, images: unknown[] = [], title?: string): Promise<StopReason> {
     // Keep a prompt-path fallback because some clients may ignore the best-effort
     // pre-prompt notification sent right after session/new.
     this.sendStartupInfoOnFirstPromptIfPending()
@@ -326,7 +332,7 @@ export class AtomicAcpSession {
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, title, resolve, reject }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -387,6 +393,50 @@ export class AtomicAcpSession {
     return this.cancelRequested
   }
 
+  async setSessionName(name: string): Promise<void> {
+    return this.enqueueTitleUpdate(async () => {
+      await this.proc.setSessionName(name)
+      await this.publishTitle(name)
+    })
+  }
+
+  private enqueueTitleUpdate(update: () => Promise<void>): Promise<void> {
+    const result = this.titleUpdateQueue.then(update)
+    this.titleUpdateQueue = result.catch(() => {})
+    return result
+  }
+
+  publishTitle(title: string | null, updatedAt: string | null = new Date().toISOString()): Promise<void> {
+    if (this.lastPublishedTitle === title) return this.lastEmit
+    this.lastPublishedTitle = title
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      title,
+      ...(updatedAt ? { updatedAt } : {})
+    })
+    return this.lastEmit
+  }
+
+  private async maybeAutoTitle(title?: string): Promise<void> {
+    if (!this.initialTitlePending || !title) return
+    this.initialTitlePending = false
+    try {
+      await this.enqueueTitleUpdate(async () => {
+        const state = (await this.proc.getState()) as { sessionName?: unknown } | null
+        const currentTitle = typeof state?.sessionName === 'string' ? state.sessionName.trim() : ''
+        if (currentTitle) {
+          await this.publishTitle(currentTitle)
+          return
+        }
+        if (this.lastPublishedTitle !== undefined) return
+        await this.proc.setSessionName(title)
+        await this.publishTitle(title)
+      })
+    } catch {
+      // Naming is best-effort and must not fail the prompt.
+    }
+  }
+
   private emit(update: SessionUpdate): void {
     // Serialize update delivery.
     this.lastEmit = this.lastEmit
@@ -419,6 +469,7 @@ export class AtomicAcpSession {
     this.inAgentLoop = false
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    void this.maybeAutoTitle(t.title)
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -427,8 +478,7 @@ export class AtomicAcpSession {
     })
 
     // Kick off Atomic, but completion is determined by Atomic events, not the RPC response.
-    // Important: Atomic may emit multiple `turn_end` events (e.g. when the model requests tools).
-    // The full prompt is finished when we see `agent_end`.
+    // The full prompt is finished when we see `agent_settled`.
     this.proc.prompt(t.message, t.images).catch(err => {
       void this.finishActiveAndQueuedFromFailure(err)
       void err
@@ -610,6 +660,12 @@ export class AtomicAcpSession {
     const type = String((ev as any).type ?? '')
 
     switch (type) {
+      case 'session_info_changed': {
+        const name = (ev as { name?: unknown }).name
+        if (typeof name === 'string' || name === undefined) void this.publishTitle(name ?? null)
+        break
+      }
+
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
@@ -862,12 +918,17 @@ export class AtomicAcpSession {
 
       case 'turn_end': {
         // Atomic uses `turn_end` for sub-steps (e.g. tool_use) and will often start another turn.
-        // Do NOT resolve the ACP `session/prompt` here; wait for `agent_end`.
+        // Do NOT resolve the ACP prompt here; wait for agent_settled.
         break
       }
 
       case 'agent_end': {
-        this.activeTurnTerminalReason = 'agent_end'
+        this.inAgentLoop = false
+        break
+      }
+
+      case 'agent_settled': {
+        this.activeTurnTerminalReason = 'agent_settled'
 
         // Cancel any pending Atomic questionnaire before resolving the ACP prompt.
         // Late ACP elicitation responses will then fail the pending-object identity guard.

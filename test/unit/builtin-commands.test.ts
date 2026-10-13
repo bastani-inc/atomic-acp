@@ -2,11 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AtomicAcpAgent } from '../../src/acp/agent.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
+import { AtomicAcpSession } from '../../src/acp/session.js'
 
 class FakeSessions {
   constructor(private readonly session: any) {}
   get(_id: string) {
     return this.session
+  }
+  maybeGet(id: string) {
+    return this.get(id)
   }
 }
 
@@ -39,7 +43,14 @@ test('AtomicAcpAgent: /name sets session display name adapter-side', async () =>
   }
 
   const agent = new AtomicAcpAgent(asAgentConn(conn))
-  ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] }) as any
+  const session = new AtomicAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc,
+    conn: asAgentConn(conn)
+  })
+  Object.defineProperty(agent, 'sessions', { value: new FakeSessions(session) })
 
   const res = await agent.prompt({
     sessionId: 's1',

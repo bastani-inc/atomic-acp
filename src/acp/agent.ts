@@ -4,6 +4,8 @@ import {
   type AgentSideConnection,
   type AuthenticateRequest,
   type CancelNotification,
+  type DeleteSessionRequest,
+  type DeleteSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -20,14 +22,14 @@ import {
   type StopReason
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
-import { SessionManager } from './session.js'
+import { SessionManager, type AtomicAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from '../atomic-rpc/command.js'
-import { AtomicRpcProcess } from '../atomic-rpc/process.js'
-import { listAtomicSessions, findAtomicSessionFile } from './atomic-sessions.js'
+import { AtomicRpcProcess, AtomicRpcSpawnError } from '../atomic-rpc/process.js'
+import { listAtomicSessions, findAtomicSession, readAtomicSessionTitle } from './atomic-sessions.js'
 import { normalizeAtomicAssistantText, normalizeAtomicMessageText } from './translate/atomic-messages.js'
 import { toolResultToText } from './translate/atomic-tools.js'
-import { promptToAtomicMessage } from './translate/prompt.js'
+import { promptToAtomicMessage, promptToSessionTitle } from './translate/prompt.js'
 import {
   loadSlashCommands,
   loadSlashCommandsFromAtomicGetCommands,
@@ -117,6 +119,7 @@ export class AtomicAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
+  private readonly restoringSessions = new Map<string, Promise<AtomicAcpSession>>()
   private clientElicitationSupport: ClientElicitationSupport = NO_CLIENT_ELICITATION_SUPPORT
 
   dispose(): void {
@@ -149,6 +152,67 @@ export class AtomicAcpAgent implements ACPAgent {
 
     this.store.delete(sessionId)
   }
+  private findStoredSession(sessionId: string, cwd?: string): { cwd: string; sessionFile: string } | null {
+    const stored = this.store.get(sessionId)
+    if (stored?.cwd && stored.sessionFile && (!cwd || stored.cwd === cwd)) return stored
+    const discovered = findAtomicSession(sessionId, cwd)
+    if (!discovered) return null
+    this.store.upsert({ sessionId, cwd: discovered.cwd, sessionFile: discovered.sessionFile })
+    return discovered
+  }
+
+  private async restoreSession(
+    sessionId: string,
+    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers'] }
+  ): Promise<AtomicAcpSession> {
+    const existing = this.sessions.maybeGet(sessionId)
+    if (existing) return existing
+    const inFlight = this.restoringSessions.get(sessionId)
+    if (inFlight) return inFlight
+
+    const restoring = (async () => {
+      const stored = this.findStoredSession(sessionId, opts?.cwd)
+      if (!stored) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
+      const cwd = opts?.cwd ?? stored.cwd
+      let proc: AtomicRpcProcess
+      try {
+        proc = await AtomicRpcProcess.spawn({
+          cwd,
+          sessionPath: stored.sessionFile,
+          atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
+        })
+      } catch (error) {
+        if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
+        throw error
+      }
+      let state: unknown = null
+      try {
+        state = await proc.getState()
+      } catch {
+        /* Capability detection falls back to the installed version. */
+      }
+      const session = this.sessions.getOrCreate(sessionId, {
+        cwd,
+        mcpServers: opts?.mcpServers ?? [],
+        conn: this.conn,
+        proc,
+        fileCommands: loadSlashCommands(cwd),
+        clientElicitationSupport: this.clientElicitationSupport,
+        atomicQuestionnaireRpcSupport: detectInstalledAtomicQuestionnaireRpcSupport(state)
+      })
+      this.lastSessionCwd = cwd
+      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
+      const title = readAtomicSessionTitle(stored.sessionFile)
+      if (title !== null) await session.publishTitle(title || null, null)
+      return session
+    })()
+    this.restoringSessions.set(sessionId, restoring)
+    try {
+      return await restoring
+    } finally {
+      this.restoringSessions.delete(sessionId)
+    }
+  }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     this.clientElicitationSupport = readClientElicitationSupport(params)
@@ -178,9 +242,8 @@ export class AtomicAcpAgent implements ACPAgent {
           embeddedContext: process.env.ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT === 'true'
         },
         sessionCapabilities: {
-          // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
-          // Enables a native session picker in clients that support it.
-          list: {}
+          list: {},
+          delete: {}
         }
       }
     }
@@ -370,7 +433,7 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    const session = this.sessions.get(params.sessionId)
+    const session = await this.restoreSession(params.sessionId)
 
     const { message, images } = promptToAtomicMessage(params.prompt)
 
@@ -458,7 +521,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         try {
-          await session.proc.setSessionName(name)
+          await session.setSessionName(name)
         } catch (e: any) {
           const msg = String(e?.message ?? e)
           const hint = /set_session_name/i.test(msg)
@@ -474,15 +537,6 @@ export class AtomicAcpAgent implements ACPAgent {
           })
           return { stopReason: 'end_turn' }
         }
-
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'session_info_update',
-            title: name,
-            updatedAt: new Date().toISOString()
-          }
-        })
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -812,7 +866,7 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    const result = await session.prompt(message, images, promptToSessionTitle(params.prompt) ?? undefined)
 
     // ACP StopReason does not include "error"; if Atomic fails we map to end_turn for now,
     // unless we know this was a cancellation.
@@ -823,7 +877,8 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
+    const session = this.sessions.maybeGet(params.sessionId)
+    if (!session) return
     await session.cancel()
   }
 
@@ -875,31 +930,8 @@ export class AtomicAcpAgent implements ACPAgent {
 
     this.lastSessionCwd = params.cwd
 
-    // MVP: ignore mcpServers.
-    // Prefer ACP-created mapping first (fast path), otherwise scan Atomic sessions dir.
-    const stored = this.store.get(params.sessionId)
-    const sessionFile =
-      stored?.cwd === params.cwd ? stored.sessionFile : findAtomicSessionFile(params.sessionId, params.cwd)
-
-    if (!sessionFile) {
-      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
-    }
-
-    // Spawn Atomic and point it directly at the session file.
-    let proc: AtomicRpcProcess
-    try {
-      proc = await AtomicRpcProcess.spawn({
-        cwd: params.cwd,
-        sessionPath: sessionFile,
-        atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND
-      })
-    } catch (e: any) {
-      if (e?.name === 'AtomicRpcSpawnError') {
-        throw RequestError.internalError({ code: e?.code }, String(e?.message ?? e))
-      }
-      throw e
-    }
-
+    const session = await this.restoreSession(params.sessionId, { cwd: params.cwd, mcpServers: params.mcpServers })
+    const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     let atomicCommands: any = null
@@ -918,28 +950,11 @@ export class AtomicAcpAgent implements ACPAgent {
       atomicCommandsErr = err
     }
 
-    const atomicQuestionnaireRpcSupport = detectInstalledAtomicQuestionnaireRpcSupport(state)
-
-    const session = this.sessions.getOrCreate(params.sessionId, {
-      cwd: params.cwd,
-      mcpServers: params.mcpServers,
-      conn: this.conn,
-      proc,
-      fileCommands: atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands,
-      clientElicitationSupport: this.clientElicitationSupport,
-      atomicQuestionnaireRpcSupport
-    })
+    session.setFileCommands(atomicCommands ? loadSlashCommandsFromAtomicGetCommands(atomicCommands) : fileCommands)
 
     // Policy: within a single ACP connection (one Zed window), keep only one live Atomic subprocess.
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
     ;(this.sessions as any).closeAllExcept?.(session.sessionId)
-
-    // (Optional) ensure mapping stays fresh.
-    this.store.upsert({
-      sessionId: params.sessionId,
-      cwd: params.cwd,
-      sessionFile
-    })
 
     // Replay full conversation history.
     const data = (await proc.getMessages()) as any
@@ -1055,8 +1070,24 @@ export class AtomicAcpAgent implements ACPAgent {
     return response
   }
 
+  async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    const stored = this.store.get(params.sessionId)
+    const discovered = findAtomicSession(params.sessionId)
+    const sessionFile = stored?.sessionFile ?? discovered?.sessionFile
+    this.sessions.close(params.sessionId)
+    if (sessionFile) {
+      try {
+        unlinkSync(sessionFile)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    this.store.delete(params.sessionId)
+    return {}
+  }
+
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
+    const session = await this.restoreSession(params.sessionId)
 
     // Accept either:
     //  - "provider/model" (preferred, matches how we advertise)
@@ -1090,7 +1121,7 @@ export class AtomicAcpAgent implements ACPAgent {
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    const session = this.sessions.get(params.sessionId)
+    const session = await this.restoreSession(params.sessionId)
 
     const mode = String(params.modeId)
     if (!isThinkingLevel(mode)) {
