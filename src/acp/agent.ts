@@ -1617,7 +1617,7 @@ function buildStartupInfo(opts: {
   return md.join('\n').trim() + '\n'
 }
 
-function readNearestPackageJson(metaUrl: string): {
+export function readNearestPackageJson(metaUrl: string): {
   name?: string
   version?: string
 } {
