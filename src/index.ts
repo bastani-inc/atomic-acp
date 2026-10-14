@@ -16,7 +16,7 @@ if ('error' in cli) {
 } else if (cli.command === 'help') {
   await writeAndExit(process.stdout, USAGE, 0)
 } else if (cli.command === 'version') {
-  await writeAndExit(process.stdout, `atomic-acp ${readNearestPackageJson(import.meta.url).version ?? '0.0.0'}\n`, 0)
+  await writeAndExit(process.stdout, `${readNearestPackageJson(import.meta.url).version ?? '0.0.0'}\n`, 0)
 }
 
 // Terminal Auth entrypoint. The ACP client launches the agent with `--terminal-login`.

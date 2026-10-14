@@ -68,7 +68,7 @@ for (const flag of ['--version', '-v']) {
   test(`atomic-acp ${flag} prints the version and exits 0 even with stdin open`, async () => {
     const { code, stdout, stderr } = await runCli([flag])
     assert.equal(code, 0, stderr)
-    assert.equal(stdout, `atomic-acp ${pkg.version}\n`)
+    assert.equal(stdout, `${pkg.version}\n`)
   })
 }
 
