@@ -60,6 +60,8 @@ npm install -g @bastani/atomic-acp
 
 To run from source instead, clone this repository and run `npm install && npm run build`. The entry point is `dist/index.js`.
 
+`atomic-acp --version` prints the installed version and `atomic-acp --help` lists the options. With no options, `atomic-acp` waits for an ACP client on stdio. Any other option before `--` makes it exit with an error.
+
 ### Add it to Zed
 
 Open Zed's `settings.json` and add an agent server:

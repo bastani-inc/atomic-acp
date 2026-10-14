@@ -1,13 +1,26 @@
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
-import { AtomicAcpAgent } from './acp/agent.js'
+import { AtomicAcpAgent, readNearestPackageJson } from './acp/agent.js'
 import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './atomic-rpc/command.js'
+import { parseCliArgs, USAGE } from './cli.js'
 
-// Adapter flags come before `--`; everything after it is passed to every `atomic --mode rpc`.
-const separator = process.argv.indexOf('--', 2)
-const adapterArgs = separator < 0 ? process.argv.slice(2) : process.argv.slice(2, separator)
+// Pipe writes can be asynchronous, so let the output flush before exiting.
+async function writeAndExit(stream: NodeJS.WriteStream, text: string, code: number): Promise<never> {
+  await new Promise<void>(resolve => stream.write(text, () => resolve()))
+  process.exit(code)
+}
+
+const cli = parseCliArgs(process.argv)
+
+if ('error' in cli) {
+  await writeAndExit(process.stderr, `atomic-acp: ${cli.error}\nRun 'atomic-acp --help' for usage.\n`, 2)
+} else if (cli.command === 'help') {
+  await writeAndExit(process.stdout, USAGE, 0)
+} else if (cli.command === 'version') {
+  await writeAndExit(process.stdout, `atomic-acp ${readNearestPackageJson(import.meta.url).version ?? '0.0.0'}\n`, 0)
+}
 
 // Terminal Auth entrypoint. The ACP client launches the agent with `--terminal-login`.
-if (adapterArgs.includes('--terminal-login')) {
+if ('command' in cli && cli.command === 'terminal-login') {
   const { spawnSync } = await import('node:child_process')
   const cmd = getAtomicCommand(process.env.ATOMIC_ACP_ATOMIC_COMMAND)
   const res = spawnSync(cmd, [], {
