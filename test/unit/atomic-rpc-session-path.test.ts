@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 
-/** A fake Atomic that appends the `--session` value it received to `session-ids.txt` in its cwd. */
+/** A fake Atomic that appends the `--session` value it received to `session-ids.txt` in the cwd it started in. */
 function writeFakeAtomic(root: string): string {
   const fixture = join(root, 'fake-atomic.cjs')
   writeFileSync(
@@ -15,6 +15,8 @@ function writeFakeAtomic(root: string): string {
       "const readline = require('node:readline')",
       "const index = process.argv.indexOf('--session')",
       "appendFileSync('session-ids.txt', (index < 0 ? '<none>' : process.argv[index + 1]) + '\\n')",
+      // Behind a Windows launcher it outlives the stopped cmd.exe until its stdin closes; it must not keep the project busy.
+      "process.chdir(require('node:os').tmpdir())",
       "readline.createInterface({ input: process.stdin }).on('line', line => {",
       'const command = JSON.parse(line)',
       "process.stdout.write(JSON.stringify({ type: 'response', id: command.id, command: command.type, success: true, data: {} }) + '\\n')",
