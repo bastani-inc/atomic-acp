@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpServer } from '@agentclientprotocol/sdk'
@@ -17,12 +17,9 @@ function fixture(t: import('node:test').TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-exit-agent-'))
   const previous = process.env.ATOMIC_CODING_AGENT_DIR
   process.env.ATOMIC_CODING_AGENT_DIR = root
-  mkdirSync(join(root, 'sessions'))
-  const sessionFile = join(root, 'sessions', 'saved.jsonl')
-  writeFileSync(sessionFile, JSON.stringify({ type: 'session', id: 'saved', cwd: root }) + '\n')
   const agent = new AtomicAcpAgent(asAgentConn(new FakeAgentSideConnection()))
   const store = new SessionStore(join(root, 'session-map.json'))
-  store.upsert({ sessionId: 'saved', cwd: root, sessionFile })
+  store.upsert({ sessionId: 'saved', cwd: root })
   Object.defineProperty(agent, 'store', { value: store })
 
   const spawns: Parameters<typeof AtomicRpcProcess.spawn>[0][] = []
@@ -33,7 +30,7 @@ function fixture(t: import('node:test').TestContext) {
     const failure = spawnFailures.shift()
     if (failure) throw failure
     const proc = Object.assign(new FakeAtomicRpcProcess(), {
-      getState: async () => ({ sessionId: 'saved', sessionFile, thinkingLevel: 'off' }),
+      getState: async () => ({ sessionId: 'saved', thinkingLevel: 'off' }),
       getAvailableThinkingLevels: async () => ['off'],
       dispose() {}
     })
@@ -48,7 +45,7 @@ function fixture(t: import('node:test').TestContext) {
     rmSync(root, { recursive: true, force: true })
   })
   const prompt = (text: string) => agent.prompt({ sessionId: 'saved', prompt: [{ type: 'text', text }] })
-  return { root, agent, spawns, procs, spawnFailures, sessionFile, prompt }
+  return { root, agent, spawns, procs, spawnFailures, prompt }
 }
 
 function isInternalError(pattern: RegExp) {
@@ -75,8 +72,8 @@ test('session/prompt fails with a JSON-RPC error when Atomic refuses the prompt'
   await assert.rejects(prompt('one'), isInternalError(/busy/))
 })
 
-test('the next prompt restarts Atomic from the session file with the same MCP servers', { timeout: 5000 }, async t => {
-  const { root, agent, spawns, procs, sessionFile, prompt } = fixture(t)
+test('the next prompt restarts Atomic on the saved session with the same MCP servers', { timeout: 5000 }, async t => {
+  const { root, agent, spawns, procs, prompt } = fixture(t)
   await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [stdioServer] })
   const first = prompt('one')
   await tick()
@@ -85,7 +82,7 @@ test('the next prompt restarts Atomic from the session file with the same MCP se
 
   const second = prompt('two')
   while (procs.length < 2 || procs[1]!.prompts.length === 0) await tick()
-  assert.equal(spawns[1]?.sessionPath, sessionFile, 'the conversation continues from the same session file')
+  assert.equal(spawns[1]?.sessionId, 'saved', 'the conversation continues in the same saved session')
   assert.deepEqual(spawns[1]?.mcpServers, spawns[0]?.mcpServers)
   assert.equal(spawns[1]?.headless, spawns[0]?.headless)
   assert.equal(procs[1]!.prompts[0]?.message, 'two')

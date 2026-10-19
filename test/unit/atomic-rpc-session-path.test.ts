@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 
+/** A fake Atomic that appends the `--session` value it received to `session-ids.txt` in the cwd it started in. */
 function writeFakeAtomic(root: string): string {
   const fixture = join(root, 'fake-atomic.cjs')
   writeFileSync(
@@ -12,18 +13,26 @@ function writeFakeAtomic(root: string): string {
     [
       "const { appendFileSync } = require('node:fs')",
       "const readline = require('node:readline')",
-      "const sessionPath = process.argv[process.argv.indexOf('--session') + 1]",
-      "appendFileSync(sessionPath, 'started\\n')",
+      "const index = process.argv.indexOf('--session')",
+      "appendFileSync('session-ids.txt', (index < 0 ? '<none>' : process.argv[index + 1]) + '\\n')",
+      // Behind a Windows launcher it outlives the stopped cmd.exe until its stdin closes; it must not keep the project busy.
+      "process.chdir(require('node:os').tmpdir())",
       "readline.createInterface({ input: process.stdin }).on('line', line => {",
       'const command = JSON.parse(line)',
-      "process.stdout.write(JSON.stringify({ type: 'response', id: command.id, command: command.type, success: true, data: { sessionFile: sessionPath } }) + '\\n')",
+      "process.stdout.write(JSON.stringify({ type: 'response', id: command.id, command: command.type, success: true, data: {} }) + '\\n')",
       '})'
     ].join('\n')
   )
   return fixture
 }
 
-test('AtomicRpcProcess preserves distinct session paths through launchers', async () => {
+async function startAndStop(params: Parameters<typeof AtomicRpcProcess.spawn>[0]): Promise<void> {
+  const proc = await AtomicRpcProcess.spawn(params)
+  await proc.getState()
+  await proc.dispose()
+}
+
+test('AtomicRpcProcess resumes the session ID through launchers in a cwd with shell metacharacters', async () => {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp launcher '))
   const fixture = writeFakeAtomic(root)
   const launchers = process.platform === 'win32' ? ['atomic.cmd', 'atomic.bat'] : ['atomic']
@@ -40,24 +49,21 @@ test('AtomicRpcProcess preserves distinct session paths through launchers', asyn
         writeFileSync(launcher, "#!/usr/bin/env node\nrequire('./fake-atomic.cjs')\n")
         chmodSync(launcher, 0o755)
       }
-      for (const suffix of ['first', 'second']) {
-        const sessionPath = join(dir, `${name}-${suffix}.jsonl`)
-        const proc = await AtomicRpcProcess.spawn({ cwd: root, atomicCommand: launcher, sessionPath })
-        proc.dispose()
-        assert.equal(readFileSync(sessionPath, 'utf8'), 'started\n')
-      }
-      assert.equal(existsSync(join(root, 'project')), false)
+      await startAndStop({ cwd: dir, atomicCommand: launcher, sessionId: `${name}-01a14fc7-024e-7169-b9c2` })
+      await startAndStop({ cwd: dir, atomicCommand: launcher })
+      assert.equal(readFileSync(join(dir, 'session-ids.txt'), 'utf8'), `${name}-01a14fc7-024e-7169-b9c2\n<none>\n`)
+      rmSync(join(dir, 'session-ids.txt'))
     }
+    assert.equal(existsSync(join(root, 'project')), false)
   } finally {
     if (previous === undefined) delete process.env.ATOMIC_ACP_PATH_TEST
     else process.env.ATOMIC_ACP_PATH_TEST = previous
-    await new Promise(resolve => setTimeout(resolve, 50))
     rmSync(root, { recursive: true, force: true })
   }
 })
 
 test(
-  'AtomicRpcProcess preserves a simulated Windows cmd session path',
+  'AtomicRpcProcess resumes the session ID through a simulated Windows cmd launcher',
   { skip: process.platform === 'win32' },
   async () => {
     const root = mkdtempSync(join(tmpdir(), 'atomic-acp-cmd-'))
@@ -67,16 +73,16 @@ test(
     chmodSync(launcher, 0o755)
     const dir = join(root, 'my project')
     mkdirSync(dir)
-    const sessionPath = join(dir, 'restored.jsonl')
     const originalPlatform = process.platform
     try {
       Object.defineProperty(process, 'platform', { value: 'win32' })
-      const proc = await AtomicRpcProcess.spawn({ cwd: root, atomicCommand: launcher, sessionPath })
-      proc.dispose()
-      assert.equal(readFileSync(sessionPath, 'utf8'), 'started\n')
+      await startAndStop({ cwd: dir, atomicCommand: launcher, sessionId: 'restored-session' })
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform })
-      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    try {
+      assert.equal(readFileSync(join(dir, 'session-ids.txt'), 'utf8'), 'restored-session\n')
+    } finally {
       rmSync(root, { recursive: true, force: true })
     }
   }

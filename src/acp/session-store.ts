@@ -5,9 +5,10 @@ import { getAtomicAcpSessionMapPath } from './paths.js'
 export type StoredSession = {
   sessionId: string
   cwd: string
-  sessionFile: string
   updatedAt: string
 }
+
+export type SessionMapping = { sessionId: string; cwd: string }
 
 type SessionMapFile = {
   version: 1
@@ -48,15 +49,20 @@ export class SessionStore {
     return db.sessions[sessionId] ?? null
   }
 
-  upsert(entry: { sessionId: string; cwd: string; sessionFile: string }): void {
+  upsert(entry: SessionMapping): void {
+    this.upsertMany([entry])
+  }
+
+  /** Record which project each session belongs to; the map is rewritten only when an entry changes. */
+  upsertMany(entries: readonly SessionMapping[]): void {
     const db = loadFile(this.path)
-    db.sessions[entry.sessionId] = {
-      sessionId: entry.sessionId,
-      cwd: entry.cwd,
-      sessionFile: entry.sessionFile,
-      updatedAt: new Date().toISOString()
+    let changed = false
+    for (const { sessionId, cwd } of entries) {
+      if (db.sessions[sessionId]?.cwd === cwd) continue
+      db.sessions[sessionId] = { sessionId, cwd, updatedAt: new Date().toISOString() }
+      changed = true
     }
-    saveFile(this.path, db)
+    if (changed) saveFile(this.path, db)
   }
 
   delete(sessionId: string): void {

@@ -92,6 +92,49 @@ export class FakeAtomicRpcProcess {
   async getMessages(): Promise<any> {
     return { messages: [] }
   }
+
+  /** The project's saved sessions, as `list_sessions` reports them; fakes may share one list as their store. */
+  sessions: Array<Record<string, unknown>> = []
+  /** The session this Atomic has open, which `delete_session` refuses like Atomic does. */
+  openSessionId: string | undefined
+
+  async listSessions(): Promise<any> {
+    return { sessions: this.sessions }
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    if (sessionId === this.openSessionId) {
+      throw new Error(`Atomic delete_session failed: Cannot delete the session that is currently open: ${sessionId}`)
+    }
+    const index = this.sessions.findIndex(session => session.id === sessionId)
+    if (index !== -1) this.sessions.splice(index, 1)
+  }
+
+  disposeCount = 0
+
+  async dispose(): Promise<void> {
+    this.disposeCount += 1
+    this.hasExited = true
+  }
+}
+
+/** A saved session as Atomic's `list_sessions` reports it. */
+export function listedSession(
+  id: string,
+  cwd: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    path: id,
+    id,
+    cwd,
+    created: '2026-10-01T00:00:00.000Z',
+    modified: '2026-10-01T00:00:02.000Z',
+    messageCount: 2,
+    firstMessage: 'Hello',
+    allMessagesText: 'Hello Hi there!',
+    ...overrides
+  }
 }
 
 export function asAgentConn(conn: FakeAgentSideConnection): AgentSideConnection {

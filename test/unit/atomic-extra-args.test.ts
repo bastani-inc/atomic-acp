@@ -36,7 +36,21 @@ test('parseAtomicExtraArgs: rejects malformed ATOMIC_ACP_ATOMIC_ARGS', () => {
 })
 
 test('parseAtomicExtraArgs: rejects args that would take RPC mode or the session away from the adapter', () => {
-  for (const arg of ['--mode', '--mode=text', '-p', '--print', '--session', '--no-session', '--continue', '--', '-h']) {
+  for (const arg of [
+    '--mode',
+    '--mode=text',
+    '-p',
+    '--print',
+    '--session',
+    '--no-session',
+    '--continue',
+    '--session-store',
+    '--session-store=sessions.sqlite',
+    '--session-prefix',
+    '--import',
+    '--',
+    '-h'
+  ]) {
     assert.throws(() => parseAtomicExtraArgs([node, entry, '--', arg], {}), /not allowed/)
   }
 })

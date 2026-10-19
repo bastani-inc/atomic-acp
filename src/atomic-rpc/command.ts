@@ -15,7 +15,7 @@ export function shouldUseShellForAtomicCommand(cmd: string): boolean {
   return normalized.endsWith('.cmd') || normalized.endsWith('.bat')
 }
 
-// Flags that would take RPC mode, the session file or stdio away from the adapter.
+// Flags that would take RPC mode, session selection or stdio away from the adapter.
 const RESERVED_ATOMIC_ARGS = new Set([
   '--',
   '--mode',
@@ -24,6 +24,9 @@ const RESERVED_ATOMIC_ARGS = new Set([
   '--session',
   '--session-id',
   '--session-dir',
+  '--session-store',
+  '--session-prefix',
+  '--import',
   '--no-session',
   '-c',
   '--continue',

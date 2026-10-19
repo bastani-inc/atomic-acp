@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
@@ -133,10 +133,8 @@ for (const failure of ['state', 'discovery', 'inconsistent']) {
     const root = mkdtempSync(join(tmpdir(), 'atomic-acp-thinking-'))
     t.after(() => rmSync(root, { recursive: true, force: true }))
     t.mock.method(globalThis, 'setTimeout', () => 0 as unknown as ReturnType<typeof setTimeout>)
-    const sessionFile = join(root, 'history.jsonl')
-    writeFileSync(sessionFile, 'saved history\n')
     const store = new SessionStore(join(root, 'map.json'))
-    store.upsert({ sessionId: 's1', cwd: root, sessionFile })
+    store.upsert({ sessionId: 's1', cwd: root })
     const { agent, conn, proc, state } = fixture()
     const sessions = new SessionManager()
     Reflect.set(agent, 'sessions', sessions)
@@ -174,8 +172,7 @@ for (const failure of ['state', 'discovery', 'inconsistent']) {
     assert.equal(historyReads, 0)
     assert.equal(sessions.maybeGet('s1'), undefined)
     assert.deepEqual(conn.updates, [])
-    assert.equal(readFileSync(sessionFile, 'utf8'), 'saved history\n')
-    assert.equal(store.get('s1')?.sessionFile, sessionFile)
+    assert.equal(store.get('s1')?.cwd, root)
     fail = false
     const result = await agent.loadSession({ sessionId: 's1', cwd: root, mcpServers: [] })
     assert.equal(result.modes?.currentModeId, 'max')
