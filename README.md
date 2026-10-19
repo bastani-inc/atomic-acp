@@ -43,7 +43,7 @@ Atomic reads files, edits code, and runs commands on your machine, exactly as it
 ### Prerequisites
 
 - Node.js 22 or newer (20 is the minimum).
-- Atomic installed and logged in to at least one model provider:
+- Atomic 0.9.39 or newer, installed and logged in to at least one model provider:
 
 ```bash
 npm install -g @bastani/atomic
@@ -102,9 +102,11 @@ Chat and tools
 
 Sessions
 
-- Sessions are saved by Atomic in `~/.atomic/agent/sessions/`, so you can pick a thread back up in Zed's history or with `atomic --resume` in a terminal.
+- Atomic saves every session in its own session store (by default its local database), so you can pick a thread back up in Zed's history or with `atomic --resume` in a terminal.
+- The editor's thread history lists the project's sessions the way Atomic's `/resume` does: newest first, leaving out sessions that have no messages, name or summary.
 - Threads get a title from your first message. Renaming in Atomic updates the title in the editor.
-- Deleting a thread in the editor deletes the Atomic session file.
+- Deleting a thread in the editor deletes its session from Atomic's session store.
+- Listing or deleting sessions of a project with no open thread briefly starts Atomic in that project to read its session store.
 - Sessions survive an adapter restart. The next message restores the saved session.
 - If a session's Atomic process exits during a message, the message fails with an error saying how Atomic exited, and its open tool calls and workflow runs are marked failed. A message that fails never ends as a normal reply. The next message starts Atomic again on the same session, with the same MCP servers.
 
@@ -159,15 +161,15 @@ Two extra commands read the workflow history Atomic keeps for the current projec
 
 On top of your Atomic prompts, skills, and extension commands, `atomic-acp` adds:
 
-| Command                        | What it does                                              |
-| ------------------------------ | --------------------------------------------------------- |
-| `/compact [instructions]`      | Compact the context, with optional instructions           |
-| `/autocompact on\|off\|toggle` | Turn automatic compaction on or off                       |
-| `/session`                     | Token, message, and cost stats plus the session file path |
-| `/name <name>`                 | Rename the session                                        |
-| `/export`                      | Export the session as HTML into the working directory     |
-| `/steering`, `/follow-up`      | Show or set how queued messages are delivered             |
-| `/changelog`                   | Show the installed Atomic changelog                       |
+| Command                        | What it does                                          |
+| ------------------------------ | ----------------------------------------------------- |
+| `/compact [instructions]`      | Compact the context, with optional instructions       |
+| `/autocompact on\|off\|toggle` | Turn automatic compaction on or off                   |
+| `/session`                     | Session ID, token, message, and cost stats            |
+| `/name <name>`                 | Rename the session                                    |
+| `/export`                      | Export the session as HTML into the working directory |
+| `/steering`, `/follow-up`      | Show or set how queued messages are delivered         |
+| `/changelog`                   | Show the installed Atomic changelog                   |
 
 Use the editor's model picker instead of `/model`, its thinking or mode picker instead of `/thinking`, and a new thread instead of `/clear`.
 
@@ -219,9 +221,9 @@ Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` st
 { "command": "atomic-acp", "args": ["--", "--model", "openai/gpt-5.5", "-e", "/path/to/extension.ts"] }
 ```
 
-Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--no-session`, `--continue`, `--resume`, `--fork`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
+Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--session-store`, `--session-prefix`, `--no-session`, `--continue`, `--resume`, `--fork`, `--import`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
 
-Everything else comes from Atomic itself. Provider logins, models, skills, and extensions use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
+Everything else comes from Atomic itself. Provider logins, models, skills, extensions, and the session store (`sessions.storage`) use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
 
 ## Limitations
 

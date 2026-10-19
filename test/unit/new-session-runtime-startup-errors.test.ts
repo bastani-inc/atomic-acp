@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AtomicAcpAgent } from '../../src/acp/agent.js'
@@ -24,21 +24,7 @@ class FakeSessions {
 test('AtomicAcpAgent: newSession returns AUTH_REQUIRED when Atomic reports an auth error after spawn', async () => {
   const conn = new FakeAgentSideConnection()
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-runtime-auth-'))
-  const sessionFile = join(root, 'sessions', 'failed.jsonl')
   const sessionMapPath = join(root, 'session-map.json')
-
-  mkdirSync(join(root, 'sessions'), { recursive: true })
-  writeFileSync(
-    sessionFile,
-    JSON.stringify({
-      type: 'session',
-      version: 3,
-      id: 's-auth',
-      timestamp: '2026-05-07T00:00:00.000Z',
-      cwd: process.cwd()
-    }) + '\n',
-    'utf-8'
-  )
 
   const session = {
     sessionId: 's-auth',
@@ -48,14 +34,14 @@ test('AtomicAcpAgent: newSession returns AUTH_REQUIRED when Atomic reports an au
         throw new Error('Authentication required: missing key')
       },
       async getState() {
-        return { thinkingLevel: 'medium', model: null, sessionFile }
+        return { thinkingLevel: 'medium', model: null, sessionId: 's-auth' }
       }
     }
   }
 
   const sessions = new FakeSessions(session)
   const store = new SessionStore(sessionMapPath)
-  store.upsert({ sessionId: 's-auth', cwd: process.cwd(), sessionFile })
+  store.upsert({ sessionId: 's-auth', cwd: process.cwd() })
   const agent = new AtomicAcpAgent(asAgentConn(conn), {} as any)
   ;(agent as any).sessions = sessions as any
   ;(agent as any).store = store as any
@@ -66,7 +52,6 @@ test('AtomicAcpAgent: newSession returns AUTH_REQUIRED when Atomic reports an au
   )
 
   assert.deepEqual(sessions.closeCalls, ['s-auth'])
-  assert.equal(existsSync(sessionFile), false)
   assert.equal(store.get('s-auth'), null)
 })
 

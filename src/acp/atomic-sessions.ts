@@ -1,351 +1,47 @@
-import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
 import { promptToSessionTitle } from './translate/prompt.js'
-import {
-  getAgentDir,
-  getAgentDirs,
-  getProjectConfigDirs,
-  readMergedJsonFiles,
-  resolveAtomicPath
-} from './atomic-settings.js'
 
 export type AtomicSessionListItem = {
   sessionId: string
   cwd: string
+  /** The session name, `''` once a name was cleared, else a title from the first message. */
   title: string | null
   updatedAt: string | null
-  sessionFile: string
 }
 
-const DEFAULT_TAIL_BYTES = 256 * 1024
-const DEFAULT_HEAD_BYTES = 64 * 1024
-
-function readSessionDirFromSettings(settingsPaths: string[], cwd: string): string | null {
-  try {
-    if (!settingsPaths.some(settingsPath => existsSync(settingsPath))) return null
-    const data = readMergedJsonFiles(settingsPaths)
-
-    const sessionDir = data.sessionDir
-    if (typeof sessionDir !== 'string' || !sessionDir.trim()) return null
-
-    return resolveAtomicPath(sessionDir, cwd)
-  } catch {
-    return null
-  }
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
 }
 
-export function getAtomicSessionsDir(cwd?: string): string {
-  const envSessionDir =
-    process.env.ATOMIC_CODING_AGENT_SESSION_DIR?.trim() || process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
-  if (envSessionDir) {
-    return resolveAtomicPath(envSessionDir, cwd ?? process.cwd())
-  }
-
-  const atomicCwd = cwd ? resolve(cwd) : process.cwd()
-  const agentDir = getAgentDir()
-  const projectSessionDir = cwd
-    ? readSessionDirFromSettings(
-        getProjectConfigDirs(cwd).map(configDir => join(configDir, 'settings.json')),
-        atomicCwd
-      )
-    : null
-
-  return (
-    projectSessionDir ??
-    readSessionDirFromSettings(
-      getAgentDirs().map(configDir => join(configDir, 'settings.json')),
-      atomicCwd
-    ) ??
-    join(agentDir, 'sessions')
-  )
+function isoDate(value: unknown): string | null {
+  const date = typeof value === 'string' ? new Date(value) : null
+  return date && Number.isFinite(date.getTime()) ? date.toISOString() : null
 }
 
-function walkJsonlFiles(dir: string, out: string[]) {
-  let entries: import('node:fs').Dirent[]
-  try {
-    // Force string names.
-    entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' }) as unknown as import('node:fs').Dirent[]
-  } catch {
-    return
-  }
-
-  for (const e of entries) {
-    const name = typeof (e as any).name === 'string' ? (e as any).name : String((e as any).name)
-    const p = join(dir, name)
-    if (e.isDirectory()) walkJsonlFiles(p, out)
-    else if (e.isFile() && name.endsWith('.jsonl')) out.push(p)
-  }
+function sessionTitle(info: Record<string, unknown>, messageCount: number): string | null {
+  const name = str(info.name)?.trim()
+  if (name || info.hasName === true) return name ?? ''
+  const firstMessage = messageCount > 0 ? str(info.firstMessage) : undefined
+  return firstMessage ? promptToSessionTitle([{ type: 'text', text: firstMessage }]) : null
 }
 
-function readFirstLine(path: string): string | null {
-  // Avoid reading the whole file.
-  const fd = openSync(path, 'r')
-  try {
-    const buf = Buffer.alloc(DEFAULT_HEAD_BYTES)
-    const n = readSync(fd, buf, 0, buf.length, 0)
-    if (n <= 0) return null
-    const s = buf.subarray(0, n).toString('utf-8')
-    const idx = s.indexOf('\n')
-    return idx === -1 ? s.trim() : s.slice(0, idx).trim()
-  } catch {
-    return null
-  } finally {
-    try {
-      closeSync(fd)
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function readTail(path: string, tailBytes = DEFAULT_TAIL_BYTES): string {
-  const st = statSync(path)
-  const start = Math.max(0, st.size - tailBytes)
-  const len = st.size - start
-
-  const fd = openSync(path, 'r')
-  try {
-    const buf = Buffer.alloc(len)
-    const n = readSync(fd, buf, 0, buf.length, start)
-    return buf.subarray(0, n).toString('utf-8')
-  } finally {
-    try {
-      closeSync(fd)
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function parseSessionHeader(firstLine: string): { sessionId: string; cwd: string } | null {
-  try {
-    const obj = JSON.parse(firstLine) as any
-    if (obj?.type !== 'session') return null
-    const sessionId = typeof obj?.id === 'string' ? obj.id : null
-    const cwd = typeof obj?.cwd === 'string' ? obj.cwd : null
-    if (!sessionId || !cwd) return null
-    return { sessionId, cwd }
-  } catch {
-    return null
-  }
-}
-
-function pickTitleFromTail(tail: string): string | null {
-  // Try to find the *latest* session_info entry (stores the user-provided name).
-  // We scan backwards line-by-line.
-  const lines = tail.split(/\r?\n/)
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim()
-    if (!line) continue
-    try {
-      const obj = JSON.parse(line) as any
-      if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
-        return obj.name.trim()
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return null
-}
-
-function scanSessionInfoNameFromFile(path: string): string | null {
-  // Fallback when the session_info entry is older than our tail window.
-  // Scan the whole file line-by-line and remember the last session_info.name.
-  const fd = openSync(path, 'r')
-  try {
-    const buf = Buffer.alloc(256 * 1024)
-    let leftover = ''
-    let offset = 0
-    let lastName: string | null = null
-
-    while (true) {
-      const n = readSync(fd, buf, 0, buf.length, offset)
-      if (n <= 0) break
-      offset += n
-
-      const chunk = leftover + buf.subarray(0, n).toString('utf8')
-      const lines = chunk.split(/\r?\n/)
-      leftover = lines.pop() ?? ''
-
-      for (const line0 of lines) {
-        const line = line0.trim()
-        if (!line) continue
-        try {
-          const obj = JSON.parse(line) as any
-          if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
-            lastName = obj.name.trim()
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    // Best-effort: parse leftover if it was a full line without trailing newline.
-    const tailLine = leftover.trim()
-    if (tailLine) {
-      try {
-        const obj = JSON.parse(tailLine) as any
-        if (obj?.type === 'session_info' && typeof obj?.name === 'string') {
-          lastName = obj.name.trim()
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    return lastName
-  } catch {
-    return null
-  } finally {
-    try {
-      closeSync(fd)
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function pickUpdatedAtFromTail(tail: string): string | null {
-  // Atomic's `/resume` effectively orders sessions by last *message* activity.
-  // We scan backwards and pick the timestamp of the most recent entry with type === "message".
-  const lines = tail.split(/\r?\n/)
-
-  // 1) Prefer the most recent message entry.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim()
-    if (!line) continue
-    try {
-      const obj = JSON.parse(line) as any
-      if (obj?.type !== 'message') continue
-      const ts = typeof obj?.timestamp === 'string' ? obj.timestamp : null
-      if (!ts) continue
-      const d = new Date(ts)
-      if (Number.isFinite(d.getTime())) return d.toISOString()
-    } catch {
-      // ignore
-    }
-  }
-
-  // 2) Fallback: any valid timestamp (covers sessions that somehow have no messages).
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim()
-    if (!line) continue
-    try {
-      const obj = JSON.parse(line) as any
-      const ts = typeof obj?.timestamp === 'string' ? obj.timestamp : null
-      if (!ts) continue
-      const d = new Date(ts)
-      if (Number.isFinite(d.getTime())) return d.toISOString()
-    } catch {
-      // ignore
-    }
-  }
-
-  return null
-}
-
-function pickFallbackTitleFromHead(path: string): string | null {
-  try {
-    const lines = readFileSync(path, 'utf8').split(/\r?\n/)
-    for (const line of lines.slice(0, 2000)) {
-      if (!line.trim()) continue
-      try {
-        const entry = JSON.parse(line) as { type?: unknown; message?: { role?: unknown; content?: unknown } }
-        if (entry.type !== 'message' || entry.message?.role !== 'user') continue
-        const content = entry.message.content
-        const blocks =
-          typeof content === 'string'
-            ? [{ type: 'text' as const, text: content }]
-            : Array.isArray(content)
-              ? content.filter(
-                  (block: unknown): block is { type: 'text'; text: string } =>
-                    typeof block === 'object' &&
-                    block !== null &&
-                    'type' in block &&
-                    block.type === 'text' &&
-                    'text' in block &&
-                    typeof block.text === 'string'
-                )
-              : []
-        const title = promptToSessionTitle(blocks)
-        if (title) return title
-      } catch {
-        // Ignore malformed entries.
-      }
-    }
-  } catch {
-    // Ignore unreadable histories.
-  }
-  return null
-}
-
-export function readAtomicSessionTitle(path: string, tail?: string): string | null {
-  try {
-    const name = pickTitleFromTail(tail ?? readTail(path)) ?? scanSessionInfoNameFromFile(path)
-    return name ?? pickFallbackTitleFromHead(path)
-  } catch {
-    return null
-  }
-}
-
-export function listAtomicSessions(cwd?: string): AtomicSessionListItem[] {
-  const sessionsDir = getAtomicSessionsDir(cwd)
-  const files: string[] = []
-  walkJsonlFiles(sessionsDir, files)
-
+/**
+ * Sessions from Atomic's `list_sessions` response, most recently modified first. Like Atomic's
+ * `/resume` picker, sessions with no messages, name or summary are left out: every Atomic start
+ * saves a session before its first prompt.
+ */
+export function parseAtomicSessionList(data: unknown): AtomicSessionListItem[] {
+  const sessions = (data as { sessions?: unknown } | null)?.sessions
+  if (!Array.isArray(sessions)) return []
   const items: AtomicSessionListItem[] = []
-
-  for (const file of files) {
-    const first = readFirstLine(file)
-    if (!first) continue
-    const header = parseSessionHeader(first)
-    if (!header) continue
-
-    let updatedAt: string | null = null
-
-    let title: string | null = null
-    try {
-      const tail = readTail(file)
-      title = readAtomicSessionTitle(file, tail)
-      updatedAt = pickUpdatedAtFromTail(tail)
-    } catch {
-      // ignore
-    }
-
-    // Fallback for updatedAt when we couldn't parse timestamps from tail.
-    if (!updatedAt) {
-      try {
-        updatedAt = statSync(file).mtime.toISOString()
-      } catch {
-        updatedAt = null
-      }
-    }
-
-    items.push({
-      sessionId: header.sessionId,
-      cwd: header.cwd,
-      title,
-      updatedAt,
-      sessionFile: file
-    })
+  for (const raw of sessions) {
+    const info = (raw ?? {}) as Record<string, unknown>
+    const sessionId = str(info.id)
+    const cwd = str(info.cwd)
+    if (sessionId === undefined || !cwd) continue
+    const messageCount = typeof info.messageCount === 'number' ? info.messageCount : 0
+    const title = sessionTitle(info, messageCount)
+    if (messageCount === 0 && title === null && info.summary === undefined) continue
+    items.push({ sessionId, cwd, title, updatedAt: isoDate(info.modified) })
   }
-
-  // Sort most recent first.
-  items.sort((a, b) => {
-    const aa = a.updatedAt ?? ''
-    const bb = b.updatedAt ?? ''
-    return bb.localeCompare(aa)
-  })
-
-  return items
-}
-
-export function findAtomicSession(sessionId: string, cwd?: string): AtomicSessionListItem | null {
-  return listAtomicSessions(cwd).find(s => s.sessionId === sessionId && (!cwd || s.cwd === cwd)) ?? null
-}
-
-export function findAtomicSessionFile(sessionId: string, cwd?: string): string | null {
-  return findAtomicSession(sessionId, cwd)?.sessionFile ?? null
+  return items.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
 }

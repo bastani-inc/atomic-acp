@@ -25,7 +25,6 @@ import {
   type AtomicSessionStats,
   SESSION_STATS_TIMEOUT_MS
 } from '../atomic-rpc/process.js'
-import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/atomic-tools.js'
 import {
   bashCommand,
@@ -132,7 +131,6 @@ function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCal
 
 export class SessionManager {
   private sessions = new Map<string, AtomicAcpSession>()
-  private readonly store = new SessionStore()
 
   /** Dispose all sessions and their underlying Atomic subprocesses. */
   disposeAll(): void {
@@ -144,19 +142,27 @@ export class SessionManager {
     return this.sessions.get(sessionId)
   }
 
+  /** A registered session for `cwd`, other than `exceptSessionId`, whose Atomic is still running. */
+  findLive(cwd: string, exceptSessionId?: string): AtomicAcpSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.cwd === cwd && session.sessionId !== exceptSessionId && !session.proc.hasExited) return session
+    }
+    return undefined
+  }
+
   /**
    * Dispose a session's underlying Atomic process and remove it from the manager.
    * Used when clients explicitly reload a session and we want a fresh Atomic subprocess.
    */
-  close(sessionId: string): void {
+  close(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
-    if (!s) return
-    try {
-      s.proc.dispose?.()
-    } catch {
-      // ignore
-    }
+    if (!s) return Promise.resolve()
     this.sessions.delete(sessionId)
+    try {
+      return Promise.resolve(s.proc.dispose?.()).catch(() => {})
+    } catch {
+      return Promise.resolve()
+    }
   }
 
   /** Close all sessions except the one with `keepSessionId`. */
@@ -168,8 +174,7 @@ export class SessionManager {
   }
 
   async create(params: SessionCreateParams): Promise<AtomicAcpSession> {
-    // Let Atomic manage session persistence in its default location (~/.atomic/agent/sessions/...)
-    // so sessions are visible to the regular `atomic` CLI.
+    // Atomic saves the session in its own session store, so the regular `atomic` CLI sees it too.
     let proc: AtomicRpcProcess
     try {
       proc = await AtomicRpcProcess.spawn({
@@ -193,11 +198,6 @@ export class SessionManager {
     }
 
     const sessionId = typeof state?.sessionId === 'string' ? state.sessionId : crypto.randomUUID()
-    const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
-
-    if (sessionFile) {
-      this.store.upsert({ sessionId, cwd: params.cwd, sessionFile })
-    }
 
     const session = new AtomicAcpSession({
       sessionId,

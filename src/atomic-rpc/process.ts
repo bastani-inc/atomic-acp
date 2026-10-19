@@ -67,7 +67,8 @@ type AtomicRpcCommand =
   | { type: 'get_session_stats'; id?: string }
   | { type: 'set_session_name'; id?: string; name: string }
   | { type: 'export_html'; id?: string; outputPath?: string }
-  | { type: 'switch_session'; id?: string; sessionPath: string }
+  | { type: 'list_sessions'; id?: string }
+  | { type: 'delete_session'; id?: string; sessionId: string }
   // Messages
   | { type: 'get_messages'; id?: string }
   // Commands
@@ -118,8 +119,8 @@ type SpawnParams = {
   cwd: string
   /** Optional override for `atomic` executable name/path */
   atomicCommand?: string
-  /** If set, Atomic will persist the session to this exact file (via `--session <path>`). */
-  sessionPath?: string
+  /** If set, Atomic resumes this saved session (via `--session <id>`) instead of starting a new one. */
+  sessionId?: string
   /**
    * MCP servers in Atomic's `mcpServers` shape, registered through a private per-process extension.
    * Env and header values are literal: Atomic receives them through its environment.
@@ -204,7 +205,7 @@ export class AtomicRpcProcess {
       throw new AtomicRpcSpawnError(`Could not start Atomic: ${(e as Error).message}`, { cause: e })
     }
     const args = ['--mode', 'rpc', '--no-themes']
-    if (params.sessionPath) args.push('--session', params.sessionPath)
+    if (params.sessionId !== undefined) args.push('--session', params.sessionId)
     const adapterExtension = writeAdapterExtension({
       mcpServers: params.mcpServers,
       ...(params.headless ? { askUserQuestionUnavailable: NO_PERSON_FOR_ASK_USER_QUESTION } : {})
@@ -274,18 +275,9 @@ export class AtomicRpcProcess {
 
     const proc = new AtomicRpcProcess(child, adapterExtension)
 
-    // Best-effort handshake.
-    // Important: Atomic may emit a get_state response pointing at a sessionFile in a directory
-    // that is created lazily. Create the parent dir up-front to avoid later parse errors
-    // when we call commands like export_html.
+    // Best-effort handshake: resolve once Atomic answers RPC commands.
     try {
-      const state = (await proc.getState()) as any
-      const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
-      if (sessionFile) {
-        const { mkdirSync } = await import('node:fs')
-        const { dirname } = await import('node:path')
-        mkdirSync(dirname(sessionFile), { recursive: true })
-      }
+      await proc.getState()
     } catch {
       // ignore for now
     }
@@ -456,9 +448,17 @@ export class AtomicRpcProcess {
     return { path: String(data?.path ?? '') }
   }
 
-  async switchSession(sessionPath: string): Promise<void> {
-    const res = await this.request({ type: 'switch_session', sessionPath })
-    if (!res.success) throw new Error(`Atomic switch_session failed: ${res.error ?? JSON.stringify(res.data)}`)
+  /** Saved sessions of the current project, as Atomic's session store lists them. */
+  async listSessions(): Promise<unknown> {
+    const res = await this.request({ type: 'list_sessions' })
+    if (!res.success) throw new Error(`Atomic list_sessions failed: ${res.error ?? JSON.stringify(res.data)}`)
+    return res.data
+  }
+
+  /** Delete a saved session from Atomic's session store. Atomic refuses to delete its own open session. */
+  async deleteSession(sessionId: string): Promise<void> {
+    const res = await this.request({ type: 'delete_session', sessionId })
+    if (!res.success) throw new Error(`Atomic delete_session failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
   async getMessages(): Promise<unknown> {

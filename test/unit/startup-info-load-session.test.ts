@@ -6,7 +6,7 @@ import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 
 class FakeStore {
   get(_sessionId: string) {
-    return { sessionId: 's1', cwd: '/tmp/project', sessionFile: '/tmp/s.jsonl', updatedAt: new Date().toISOString() }
+    return { sessionId: 's1', cwd: '/tmp/project', updatedAt: new Date().toISOString() }
   }
   upsert() {
     // noop

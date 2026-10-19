@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpServer } from '@agentclientprotocol/sdk'
@@ -24,19 +24,16 @@ function fixture(t: import('node:test').TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-mcp-session-'))
   const previous = process.env.ATOMIC_CODING_AGENT_DIR
   process.env.ATOMIC_CODING_AGENT_DIR = root
-  mkdirSync(join(root, 'sessions'))
-  const sessionFile = join(root, 'sessions', 'saved.jsonl')
-  writeFileSync(sessionFile, JSON.stringify({ type: 'session', id: 'saved', cwd: root }) + '\n')
   const agent = new AtomicAcpAgent(asAgentConn(new FakeAgentSideConnection()))
   const store = new SessionStore(join(root, 'session-map.json'))
-  store.upsert({ sessionId: 'saved', cwd: root, sessionFile })
+  store.upsert({ sessionId: 'saved', cwd: root })
   Object.defineProperty(agent, 'store', { value: store })
 
   const spawns: Parameters<typeof AtomicRpcProcess.spawn>[0][] = []
   t.mock.method(AtomicRpcProcess, 'spawn', async (options: Parameters<typeof AtomicRpcProcess.spawn>[0]) => {
     spawns.push(options)
     return Object.assign(new FakeAtomicRpcProcess(), {
-      getState: async () => ({ sessionId: 'saved', sessionFile, thinkingLevel: 'off' }),
+      getState: async () => ({ sessionId: 'saved', thinkingLevel: 'off' }),
       getAvailableThinkingLevels: async () => ['off'],
       dispose() {}
     }) as unknown as AtomicRpcProcess
