@@ -93,6 +93,16 @@ export class FakeAtomicRpcProcess {
     return { messages: [] }
   }
 
+  /** Reasons of each `start_pending_recovery`; set `recoveryError` to fail them like an Atomic without the command. */
+  readonly recoveryRequests: string[] = []
+  recoveryError: unknown = null
+
+  async startPendingRecovery(reason: string): Promise<unknown> {
+    this.recoveryRequests.push(reason)
+    if (this.recoveryError) throw this.recoveryError
+    return { replayed: 0, dropped: 0, completions: 0, notices: [] }
+  }
+
   /** The project's saved sessions, as `list_sessions` reports them; fakes may share one list as their store. */
   sessions: Array<Record<string, unknown>> = []
   /** The session this Atomic has open, which `delete_session` refuses like Atomic does. */

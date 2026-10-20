@@ -108,6 +108,7 @@ Sessions
 - Deleting a thread in the editor deletes its session from Atomic's session store.
 - Listing or deleting sessions of a project with no open thread briefly starts Atomic in that project to read its session store.
 - Sessions survive an adapter restart. The next message restores the saved session.
+- Work that a previous Atomic process left unfinished in a session, such as messages from background subagents that never reached the agent, is recovered once the session is loaded or restored: Atomic replays it in a turn that streams into the thread, as `atomic --resume` does in a terminal.
 - If a session's Atomic process exits during a message, the message fails with an error saying how Atomic exited, and its open tool calls and workflow runs are marked failed. A message that fails never ends as a normal reply. The next message starts Atomic again on the same session, with the same MCP servers.
 
 Models and context
@@ -221,9 +222,9 @@ Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` st
 { "command": "atomic-acp", "args": ["--", "--model", "openai/gpt-5.5", "-e", "/path/to/extension.ts"] }
 ```
 
-Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--session-store`, `--session-prefix`, `--no-session`, `--continue`, `--resume`, `--fork`, `--import`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
+Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--session-store`, `--session-prefix`, `--storage`, `--storage-file`, `--no-session`, `--continue`, `--resume`, `--fork`, `--import`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
 
-Everything else comes from Atomic itself. Provider logins, models, skills, extensions, and the session store (`sessions.storage`) use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR` and `ATOMIC_CODING_AGENT_SESSION_DIR`, pass through to the Atomic process.
+Everything else comes from Atomic itself. Provider logins, models, skills, extensions, and the session store (`sessions.storage`) use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR`, `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_STORAGE`, pass through to every Atomic process.
 
 ## Limitations
 

@@ -110,6 +110,7 @@ test('prompt restores a saved session by ID once and republishes its saved title
   )
   assert.ok(titleUpdate)
   assert.equal('updatedAt' in titleUpdate.update, false)
+  assert.deepEqual(proc.recoveryRequests, ['resume'], 'Atomic recovers interrupted work of the restored session')
 })
 
 test('cancelling a stale session is a no-op without starting Atomic', async t => {
@@ -190,6 +191,44 @@ test('load restores the original prompt title and replays history without renami
     )
   )
   assert.ok(conn.updates.some(({ update }) => update.sessionUpdate === 'user_message_chunk'))
+})
+
+test('load asks Atomic to recover interrupted work once the history is shown', async t => {
+  const { root, conn, agent } = fixture(t)
+  let updatesBeforeRecovery = -1
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high'],
+    getMessages: async () => ({ messages: [{ role: 'user', content: 'Original prompt' }] })
+  })
+  proc.startPendingRecovery = async (reason: string) => {
+    updatesBeforeRecovery = conn.updates.length
+    proc.recoveryRequests.push(reason)
+    return { replayed: 0, dropped: 0, completions: 0, notices: [] }
+  }
+  proc.sessions = [listedSession('saved', root)]
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => proc as unknown as AtomicRpcProcess)
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  assert.deepEqual(proc.recoveryRequests, [], 'recovery waits until the load response is sent')
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(proc.recoveryRequests, ['resume'])
+  const historyIndex = conn.updates.findIndex(({ update }) => update.sessionUpdate === 'user_message_chunk')
+  assert.ok(historyIndex >= 0 && historyIndex < updatesBeforeRecovery, 'the history is replayed before recovery')
+})
+
+test('load still succeeds when Atomic cannot recover interrupted work', async t => {
+  const { root, agent } = fixture(t)
+  const proc = Object.assign(new FakeAtomicRpcProcess(), {
+    getState: async () => ({ thinkingLevel: 'high', model: { provider: 'test', id: 'model' } }),
+    getAvailableThinkingLevels: async () => ['high']
+  })
+  proc.recoveryError = new Error('Atomic start_pending_recovery failed: Unknown command: start_pending_recovery')
+  proc.sessions = [listedSession('saved', root)]
+  t.mock.method(AtomicRpcProcess, 'spawn', async () => proc as unknown as AtomicRpcProcess)
+  await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(proc.recoveryRequests, ['resume'])
+  assert.equal(proc.hasExited, false)
 })
 
 test('failed restore initialization disposes the child and permits a fresh restore', async t => {

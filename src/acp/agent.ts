@@ -223,7 +223,12 @@ export class AtomicAcpAgent implements ACPAgent {
 
   private async restoreSessionImpl(
     sessionId: string,
-    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; deferTitle?: boolean }
+    opts?: {
+      cwd?: string
+      mcpServers?: LoadSessionRequest['mcpServers']
+      deferTitle?: boolean
+      deferRecovery?: boolean
+    }
   ): Promise<AtomicAcpSession> {
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) {
@@ -266,6 +271,7 @@ export class AtomicAcpAgent implements ACPAgent {
         const title = await this.readSessionTitle(proc, sessionId)
         if (title !== null) await session.publishTitle(title || null, null)
       }
+      if (!opts?.deferRecovery) startPendingRecovery(proc)
       return session
     } catch (error) {
       if (this.sessions.maybeGet(sessionId)?.proc === proc) this.sessions.close(sessionId)
@@ -985,7 +991,8 @@ export class AtomicAcpAgent implements ACPAgent {
     const session = await this.restoreSessionImpl(params.sessionId, {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
-      deferTitle: true
+      deferTitle: true,
+      deferRecovery: true
     })
     const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
@@ -1124,9 +1131,11 @@ export class AtomicAcpAgent implements ACPAgent {
       }
     }
 
-    // Advertise slash commands after the response so the client knows the session exists.
+    // Advertise slash commands and recover interrupted work after the response, once the client
+    // knows the session exists and has its history.
     setTimeout(() => {
       void (async () => {
+        startPendingRecovery(proc)
         await session.publishContextUsage()
         try {
           if (atomicCommandsErr || !atomicCommands) throw atomicCommandsErr
@@ -1209,6 +1218,15 @@ export class AtomicAcpAgent implements ACPAgent {
     if (params.configId === MODEL_CONFIG_ID) await session.publishContextUsage()
     return { configOptions }
   }
+}
+
+/**
+ * Ask Atomic to recover work its previous process left unfinished in a resumed session. Its turn
+ * streams into the thread like a background turn. Atomic 0.9.39 recovers on its own and rejects the
+ * command as unknown, so failures are ignored.
+ */
+function startPendingRecovery(proc: AtomicRpcProcess): void {
+  void proc.startPendingRecovery('resume').catch(() => {})
 }
 
 async function getThinkingState(

@@ -69,6 +69,7 @@ type AtomicRpcCommand =
   | { type: 'export_html'; id?: string; outputPath?: string }
   | { type: 'list_sessions'; id?: string }
   | { type: 'delete_session'; id?: string; sessionId: string }
+  | { type: 'start_pending_recovery'; id?: string; reason?: 'startup' | 'resume' }
   // Messages
   | { type: 'get_messages'; id?: string }
   // Commands
@@ -459,6 +460,16 @@ export class AtomicRpcProcess {
   async deleteSession(sessionId: string): Promise<void> {
     const res = await this.request({ type: 'delete_session', sessionId })
     if (!res.success) throw new Error(`Atomic delete_session failed: ${res.error ?? JSON.stringify(res.data)}`)
+  }
+
+  /**
+   * Recover work an earlier Atomic left unfinished in the open session: replay interrupted deliveries
+   * in a turn that streams as usual. Since 0.9.40 Atomic does this only when asked, once the transcript is shown.
+   */
+  async startPendingRecovery(reason: 'startup' | 'resume'): Promise<unknown> {
+    const res = await this.request({ type: 'start_pending_recovery', reason })
+    if (!res.success) throw new Error(`Atomic start_pending_recovery failed: ${res.error ?? JSON.stringify(res.data)}`)
+    return res.data
   }
 
   async getMessages(): Promise<unknown> {

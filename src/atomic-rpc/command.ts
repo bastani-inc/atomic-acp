@@ -27,6 +27,8 @@ const RESERVED_ATOMIC_ARGS = new Set([
   '--session-store',
   '--session-prefix',
   '--import',
+  '--storage',
+  '--storage-file',
   '--no-session',
   '-c',
   '--continue',
