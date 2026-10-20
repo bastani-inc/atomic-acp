@@ -48,6 +48,9 @@ test('parseAtomicExtraArgs: rejects args that would take RPC mode or the session
     '--session-store=sessions.sqlite',
     '--session-prefix',
     '--import',
+    '--storage',
+    '--storage={"path":"sessions.sqlite"}',
+    '--storage-file',
     '--',
     '-h'
   ]) {

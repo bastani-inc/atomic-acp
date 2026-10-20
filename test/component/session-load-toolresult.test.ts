@@ -31,7 +31,8 @@ test('AtomicAcpAgent: loadSession replays toolResult as tool_call + tool_call_up
       }),
       getAvailableModels: async () => ({ models: [] }),
       getAvailableThinkingLevels: async () => ['medium'],
-      getState: async () => ({ thinkingLevel: 'medium' })
+      getState: async () => ({ thinkingLevel: 'medium' }),
+      startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] })
     } as any
   }
 
