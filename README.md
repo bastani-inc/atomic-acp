@@ -43,7 +43,7 @@ Atomic reads files, edits code, and runs commands on your machine, exactly as it
 ### Prerequisites
 
 - Node.js 22 or newer (20 is the minimum).
-- Atomic 0.9.39 or newer, installed and logged in to at least one model provider:
+- Atomic 0.9.39 or newer (the 0.9.41 pre-releases work too), installed and logged in to at least one model provider:
 
 ```bash
 npm install -g @bastani/atomic
