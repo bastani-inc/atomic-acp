@@ -54,7 +54,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@bastani/atomic": "0.9.40",
+    "@bastani/atomic": "0.9.41-alpha.1",
     "@eslint/js": "^9.17.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.0.0",
@@ -67,6 +67,6 @@
     "typescript-eslint": "^8.18.0"
   },
   "peerDependencies": {
-    "@bastani/atomic": ">=0.9.39"
+    "@bastani/atomic": ">=0.9.39 || >=0.9.41-alpha.1"
   }
 }
