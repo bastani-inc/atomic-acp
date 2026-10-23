@@ -43,7 +43,7 @@ Atomic reads files, edits code, and runs commands on your machine, exactly as it
 ### Prerequisites
 
 - Node.js 22 or newer (20 is the minimum).
-- Atomic 0.9.39 or newer (the 0.9.41 pre-releases work too), installed and logged in to at least one model provider:
+- Atomic 0.9.39 or newer, installed and logged in to at least one model provider:
 
 ```bash
 npm install -g @bastani/atomic
@@ -89,7 +89,7 @@ Other ways to launch it:
 
 Then open the agent panel, pick **Atomic**, and start a thread.
 
-If Atomic has no working provider login, Zed shows an **Authenticate** banner that opens Atomic in a terminal. You can run the same flow yourself with `atomic-acp --terminal-login`.
+If Atomic has no working provider login, Zed shows an **Authenticate** banner that opens Atomic in a terminal. You can run the same flow yourself with `atomic-acp --terminal-login`. Since Atomic 0.9.42, device-code logins such as GitHub Copilot, Kimi Code and Meta show the code and wait for you to press Enter in that terminal before they open the browser and copy the code.
 
 ## What works
 
@@ -224,7 +224,7 @@ Arguments after `--` are added to every `atomic --mode rpc` that `atomic-acp` st
 
 Each argument is passed to Atomic as is, without a shell. `atomic-acp` exits with an error at startup if `ATOMIC_ACP_ATOMIC_ARGS` isn't a JSON array of strings, or if an argument would take over what the adapter manages: `--mode`, `--print`, the session flags (`--session`, `--session-id`, `--session-dir`, `--session-store`, `--session-prefix`, `--storage`, `--storage-file`, `--no-session`, `--continue`, `--resume`, `--fork`, `--import`), `--export`, `--list-models`, `--help`, `--version`, or a nested `--`.
 
-Everything else comes from Atomic itself. Provider logins, models, skills, extensions, and the session store (`sessions.storage`) use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR`, `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_STORAGE`, pass through to every Atomic process.
+Everything else comes from Atomic itself. Provider logins, models, skills, extensions, and the session store (the `storage` or `sessions.storage` setting, including a shared database joined with `atomic storage join`) use your normal Atomic settings in `~/.atomic/agent/settings.json` and `<project>/.atomic/settings.json`. Atomic's own variables, such as `ATOMIC_CODING_AGENT_DIR`, `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_STORAGE`, pass through to every Atomic process.
 
 ## Limitations
 
