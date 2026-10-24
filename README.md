@@ -149,6 +149,7 @@ A message that starts workflows, with `/workflow <name>` or through the agent's 
 
 - Stopping the message (cancel in the editor) also quits the runs it started. They stay resumable with `/workflow resume <runId>`.
 - If a run stops to wait for human input, the message stops waiting for that run and tells you. Reply in the thread and the agent can answer the prompt with its `workflow` tool.
+- Runs that use Atomic's local worker pools (the `workflows.localWorkers` setting) run under the session's Atomic process too. Since Atomic 0.9.43, a worker that dies is replaced and its child replays from its last checkpoint, so the run can still complete. If the pool gives up, the run's tool call is marked failed and shows Atomic's error, which names the worker's log file under `worker-logs/`.
 - Set `ATOMIC_ACP_WAIT_FOR_WORKFLOWS=0` to end the message as soon as the run starts, as before. Runs then continue in the background, and their notices stream into the thread.
 
 Two extra commands read the workflow history Atomic keeps for the current project:

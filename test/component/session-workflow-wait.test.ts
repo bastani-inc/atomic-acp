@@ -101,6 +101,22 @@ test('a handled /workflow command ends after the run when no follow-up turn come
   assert.equal(turn.reason, 'end_turn')
 })
 
+test('a run that fails in a local worker pool ends failed with the error that names the worker log', async () => {
+  const { conn, proc, session } = setup()
+  proc.promptDisposition = 'handled'
+  const turn = track(session.prompt('/workflow pool'))
+  proc.emit(entry('workflow.run.start', { runId: 'run-w', name: 'pool' }))
+  proc.emit(entry('workflow.stage.start', { runId: 'run-w', stageId: 'c', name: 'workflow:pool-child' }))
+  proc.emit(entry('workflow.stage.end', { runId: 'run-w', stageId: 'c', status: 'failed' }))
+  const error = 'Local worker retry limit (worker stderr log: /home/u/.atomic/workflows/worker-logs/run-w/worker-1.log)'
+  proc.emit(entry('workflow.run.end', { runId: 'run-w', status: 'failed', error }))
+  await sleep(60)
+  assert.equal(turn.reason, 'end_turn')
+  const last = runToolCall(conn, 'run-w').at(-1)
+  assert.equal(last?.sessionUpdate === 'tool_call_update' ? last.status : undefined, 'failed')
+  assert.ok(JSON.stringify(last).includes(`error: ${error}`))
+})
+
 test('runs started by a handled command before its response are still awaited', async () => {
   const { proc, session } = setup()
   let release!: () => void
