@@ -109,6 +109,7 @@ Sessions
 - Listing or deleting sessions of a project with no open thread briefly starts Atomic in that project to read its session store.
 - Sessions survive an adapter restart. The next message restores the saved session.
 - Work that a previous Atomic process left unfinished in a session, such as messages from background subagents that never reached the agent, is recovered once the session is loaded or restored: Atomic replays it in a turn that streams into the thread, as `atomic --resume` does in a terminal.
+- When a background shell or subagent finishes while no message is running, Atomic answers its completion notice in a turn that streams into the thread. Since Atomic 0.9.44 this also works after the session was loaded or restored in a new Atomic process; earlier versions could drop those notices.
 - If a session's Atomic process exits during a message, the message fails with an error saying how Atomic exited, and its open tool calls and workflow runs are marked failed. A message that fails never ends as a normal reply. The next message starts Atomic again on the same session, with the same MCP servers.
 
 Models and context
@@ -149,7 +150,7 @@ A message that starts workflows, with `/workflow <name>` or through the agent's 
 
 - Stopping the message (cancel in the editor) also quits the runs it started. They stay resumable with `/workflow resume <runId>`.
 - If a run stops to wait for human input, the message stops waiting for that run and tells you. Reply in the thread and the agent can answer the prompt with its `workflow` tool.
-- Runs that use Atomic's local worker pools (the `workflows.localWorkers` setting) run under the session's Atomic process too. Since Atomic 0.9.43, a worker that dies is replaced and its child replays from its last checkpoint, so the run can still complete. If the pool gives up, the run's tool call is marked failed and shows Atomic's error, which names the worker's log file under `worker-logs/`.
+- Runs that use Atomic's local worker pools (the `workflows.localWorkers` setting) run under the session's Atomic process too. Since Atomic 0.9.43, a worker that dies is replaced and its child replays from its last checkpoint, so the run can still complete. If the pool gives up, the run's tool call is marked failed and shows Atomic's error, which names the worker's log file under `worker-logs/`. Since Atomic 0.9.44, a pool's workers run under a coordinator process that exits with the session's Atomic process, so stopping the message, quitting `atomic-acp` or Atomic exiting leaves no pool processes behind.
 - Set `ATOMIC_ACP_WAIT_FOR_WORKFLOWS=0` to end the message as soon as the run starts, as before. Runs then continue in the background, and their notices stream into the thread.
 
 Two extra commands read the workflow history Atomic keeps for the current project:
