@@ -23,7 +23,6 @@ import {
   type ListSessionsResponse,
   type LoadSessionRequest,
   type LoadSessionResponse,
-  type ModelInfo,
   type NewSessionRequest,
   type PromptRequest,
   type PromptResponse,
@@ -418,7 +417,7 @@ export class AtomicAcpAgent implements ACPAgent {
       this.cleanupFailedNewSession(session.sessionId)
       throw maybeAuthRequiredError(err) ?? RequestError.internalError({}, String(err))
     }
-    const { configOptions, models, modes } = configuration
+    const { configOptions, modes } = configuration
     if (typeof state?.sessionId === 'string') {
       this.store.upsert({ sessionId: session.sessionId, cwd: params.cwd })
     }
@@ -438,20 +437,18 @@ export class AtomicAcpAgent implements ACPAgent {
           updateNotice
         })
 
-    if (preludeText)
-      session.setStartupInfo(preludeText)
+    if (preludeText) session.setStartupInfo(preludeText)
 
-      // Policy: within a single ACP connection (one client window), keep only one live Atomic subprocess.
-      // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
-      // It does NOT affect other client windows because they run in separate agent processes.
-      //
-      // (Tests sometimes stub out `this.sessions`, so guard the call.)
+    // Policy: within a single ACP connection (one client window), keep only one live Atomic subprocess.
+    // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
+    // It does NOT affect other client windows because they run in separate agent processes.
+    //
+    // (Tests sometimes stub out `this.sessions`, so guard the call.)
     ;(this.sessions as any).closeAllExcept?.(session.sessionId)
 
     const response = {
       sessionId: session.sessionId,
       configOptions,
-      models,
       modes,
       _meta: {
         atomicAcp: {
@@ -789,7 +786,7 @@ export class AtomicAcpAgent implements ACPAgent {
           return { stopReason: 'end_turn' }
         }
 
-        let text = ''
+        let text: string
         try {
           text = readFileSync(changelogPath, 'utf-8')
         } catch (e: any) {
@@ -836,7 +833,7 @@ export class AtomicAcpAgent implements ACPAgent {
         const safeSessionId = session.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
         const outputPath = join(session.cwd, `atomic-session-${safeSessionId}.html`)
 
-        let resultPath = ''
+        let resultPath: string
         try {
           const result = await session.proc.exportHtml(outputPath)
           resultPath = result.path
@@ -945,10 +942,6 @@ export class AtomicAcpAgent implements ACPAgent {
     return this.listSessionsImpl(params)
   }
 
-  async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-    return this.listSessionsImpl(params)
-  }
-
   private async listSessionsImpl(params: ListSessionsRequest): Promise<ListSessionsResponse> {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
@@ -999,7 +992,7 @@ export class AtomicAcpAgent implements ACPAgent {
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     let atomicCommands: any = null
     let atomicCommandsErr: unknown = null
-    let state: any = null
+    let state: any
 
     let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
     try {
@@ -1009,7 +1002,7 @@ export class AtomicAcpAgent implements ACPAgent {
       this.sessions.close(params.sessionId)
       throw err
     }
-    const { configOptions, models, modes } = configuration
+    const { configOptions, modes } = configuration
     const title = await this.readSessionTitle(proc, params.sessionId)
     if (title !== null) await session.publishTitle(title || null, null)
 
@@ -1122,7 +1115,6 @@ export class AtomicAcpAgent implements ACPAgent {
 
     const response = {
       configOptions,
-      models,
       modes,
       _meta: {
         atomicAcp: {
@@ -1169,7 +1161,7 @@ export class AtomicAcpAgent implements ACPAgent {
     return response
   }
 
-  async unstable_deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+  async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
     return this.withSessionOperation(params.sessionId, () => this.deleteSessionImpl(params))
   }
 
@@ -1182,13 +1174,6 @@ export class AtomicAcpAgent implements ACPAgent {
     await this.withProjectAtomic(cwd, proc => proc.deleteSession(sessionId), sessionId)
     this.store.delete(sessionId)
     return {}
-  }
-
-  async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
-    const session = await this.restoreSession(params.sessionId)
-    await setSessionModel(session.proc, params.modelId)
-    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
-    await session.publishContextUsage()
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
@@ -1256,6 +1241,8 @@ async function getThinkingState(
     }))
   }
 }
+
+type ModelChoice = { modelId: string; name: string; description: string | null }
 
 async function getSessionConfiguration(proc: AtomicRpcProcess, pre?: { state?: unknown; availableModels?: unknown }) {
   const state = pre?.state ?? (await proc.getState())
@@ -1337,11 +1324,10 @@ async function getModelState(
   proc: AtomicRpcProcess,
   pre?: { state?: any | null; availableModels?: any | null }
 ): Promise<{
-  availableModels: ModelInfo[]
+  availableModels: ModelChoice[]
   currentModelId: string
 } | null> {
   // Ask Atomic for available models.
-  let availableModels: ModelInfo[] = []
 
   const data =
     pre?.availableModels ??
@@ -1354,7 +1340,7 @@ async function getModelState(
     })())
 
   const models: any[] = Array.isArray(data?.models) ? data.models : []
-  availableModels = models
+  const availableModels: ModelChoice[] = models
     .map(m => {
       const provider = String(m?.provider ?? '').trim()
       const id = String(m?.id ?? '').trim()
@@ -1365,9 +1351,9 @@ async function getModelState(
         modelId: `${provider}/${id}`,
         name: `${provider}/${name}`,
         description: null
-      } satisfies ModelInfo
+      } satisfies ModelChoice
     })
-    .filter(Boolean) as ModelInfo[]
+    .filter(Boolean) as ModelChoice[]
 
   // Ask Atomic what model is currently active.
   let currentModelId: string | null = null

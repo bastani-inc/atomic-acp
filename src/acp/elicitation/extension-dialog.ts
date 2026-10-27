@@ -68,7 +68,7 @@ async function requestDialog(
           ...(typeof ev.placeholder === 'string' ? { description: ev.placeholder } : {}),
           ...(typeof ev.prefill === 'string' ? { default: ev.prefill } : {})
         }
-      const response = await conn.unstable_createElicitation({
+      const response = await conn.createElicitation({
         sessionId,
         mode: 'form',
         message: typeof ev.message === 'string' ? `${title}\n\n${ev.message}` : title,
@@ -76,7 +76,7 @@ async function requestDialog(
         _meta: { atomicAcp: { kind: 'extension_ui', method: String(method), atomicRequestId: id } }
       })
       if (response.action !== 'accept') return cancelled
-      const value = response.content?.value
+      const value = (response.content as Record<string, unknown> | null | undefined)?.value
       if (method === 'confirm')
         return typeof value === 'boolean' ? { type: 'extension_ui_response', id, confirmed: value } : cancelled
       if (typeof value !== 'string' || (method === 'select' && !options.includes(value))) return cancelled

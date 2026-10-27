@@ -76,21 +76,20 @@ for (const legacy of [false, true]) {
     assert.deepEqual(conn.updates[0].update, { sessionUpdate: 'current_mode_update', currentModeId: 'max' })
     assert.equal(conn.updates[1].update.sessionUpdate, 'config_option_update')
   })
-
-  test(`${legacy ? 'legacy' : 'config'} model setter refreshes model-specific thinking choices`, async () => {
-    const { agent, conn } = fixture()
-    if (legacy) await agent.unstable_setSessionModel({ sessionId: 's1', modelId: 'plain' })
-    else await agent.setSessionConfigOption({ sessionId: 's1', configId: 'model', value: 'test/plain' })
-    assert.deepEqual(conn.updates[0].update, { sessionUpdate: 'current_mode_update', currentModeId: 'off' })
-    const update = conn.updates[1].update
-    assert.equal(update.sessionUpdate, 'config_option_update')
-    if (update.sessionUpdate !== 'config_option_update') throw new Error('missing configuration')
-    const option = update.configOptions.find(option => option.id === 'thought_level')
-    assert.equal(option?.currentValue, 'off')
-    assert.ok(option?.type === 'select')
-    assert.deepEqual(option.options, [{ value: 'off', name: 'Thinking: off', description: null }])
-  })
 }
+
+test('model setter refreshes model-specific thinking choices', async () => {
+  const { agent, conn } = fixture()
+  await agent.setSessionConfigOption({ sessionId: 's1', configId: 'model', value: 'test/plain' })
+  assert.deepEqual(conn.updates[0].update, { sessionUpdate: 'current_mode_update', currentModeId: 'off' })
+  const update = conn.updates[1].update
+  assert.equal(update.sessionUpdate, 'config_option_update')
+  if (update.sessionUpdate !== 'config_option_update') throw new Error('missing configuration')
+  const option = update.configOptions.find(option => option.id === 'thought_level')
+  assert.equal(option?.currentValue, 'off')
+  assert.ok(option?.type === 'select')
+  assert.deepEqual(option.options, [{ value: 'off', name: 'Thinking: off', description: null }])
+})
 
 test('configuration rejects unknown ids, non-string values and empty levels without mutation', async () => {
   const { agent, calls } = fixture()

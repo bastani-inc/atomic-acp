@@ -55,12 +55,12 @@ test('session deletion is advertised, removes the session from Atomic and the ma
   const started = mockAtomic(t, listing)
   const init = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} })
   assert.deepEqual(init.agentCapabilities?.sessionCapabilities?.delete, {})
-  assert.deepEqual(await agent.unstable_deleteSession({ sessionId: 'saved' }), {})
+  assert.deepEqual(await agent.deleteSession({ sessionId: 'saved' }), {})
   assert.deepEqual(listedIds(listing), [])
   assert.equal(store.get('saved'), null)
   assert.deepEqual((await agent.listSessions({ cwd: root })).sessions, [])
-  assert.deepEqual(await agent.unstable_deleteSession({ sessionId: 'saved' }), {})
-  assert.deepEqual(await agent.unstable_deleteSession({ sessionId: 'never-existed' }), {})
+  assert.deepEqual(await agent.deleteSession({ sessionId: 'saved' }), {})
+  assert.deepEqual(await agent.deleteSession({ sessionId: 'never-existed' }), {})
   assert.ok(started.length > 0)
   assert.ok(
     started.every(proc => proc.hasExited),
@@ -73,7 +73,7 @@ test('deleting an open session stops its Atomic and deletes it through another',
   const started = mockAtomic(t, listing)
   await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
   const [own] = started
-  await agent.unstable_deleteSession({ sessionId: 'saved' })
+  await agent.deleteSession({ sessionId: 'saved' })
   assert.equal(own?.hasExited, true)
   assert.deepEqual(listedIds(listing), [])
 })
@@ -83,7 +83,7 @@ test('deletion goes through a running Atomic of the same project instead of star
   listing.push(listedSession('other', root))
   const started = mockAtomic(t, listing)
   await agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
-  await agent.unstable_deleteSession({ sessionId: 'other' })
+  await agent.deleteSession({ sessionId: 'other' })
   assert.equal(started.length, 1)
   assert.equal(started[0]?.hasExited, false)
   assert.deepEqual(listedIds(listing), ['saved'])
@@ -322,7 +322,7 @@ test('delete waits for a blocked restore and prevents queued operations from res
   const restoring = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })
   await spawned.promise
   let deleted = false
-  const deleting = agent.unstable_deleteSession({ sessionId: 'saved' }).then(() => {
+  const deleting = agent.deleteSession({ sessionId: 'saved' }).then(() => {
     deleted = true
   })
   const laterLoad = agent.loadSession({ sessionId: 'saved', cwd: root, mcpServers: [] })

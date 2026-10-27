@@ -129,8 +129,9 @@ for (const [method, value] of [
     assert.ok('sessionId' in request)
     assert.equal(request.sessionId, 's1')
     assert.equal(request.message, 'Prompt\n\nExplain')
-    assert.deepEqual(request.requestedSchema.required, ['value'])
-    const property = request.requestedSchema.properties!.value
+    const schema = request.requestedSchema as { required?: string[]; properties?: Record<string, any> }
+    assert.deepEqual(schema.required, ['value'])
+    const property = schema.properties!.value
     assert.equal(property.type, method === 'confirm' ? 'boolean' : 'string')
     if (method === 'select') assert.deepEqual(property, { type: 'string', title: 'Prompt', enum: ['Alpha', 'Beta'] })
     if (method === 'input' || method === 'editor')
