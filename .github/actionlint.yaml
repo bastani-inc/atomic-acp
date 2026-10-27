@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - namespace-profile-atomic-*
+    - nscloud-ubuntu-24.04-*
