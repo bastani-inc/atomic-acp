@@ -21,7 +21,7 @@ export class FakeAgentSideConnection {
     this.updates.push(msg)
   }
 
-  async unstable_createElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
+  async createElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
     this.elicitationRequests.push(params)
     const response = this.elicitationResponses.shift()
     if (!response) return { action: 'cancel' }

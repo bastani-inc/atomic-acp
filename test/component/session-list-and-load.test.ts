@@ -244,7 +244,7 @@ test('AtomicAcpAgent: SDK dispatches session/delete, which removes the session f
     const initialized = await clientConn.initialize({ protocolVersion: 1 })
     assert.deepEqual(initialized.agentCapabilities?.sessionCapabilities?.delete, {})
 
-    assert.deepEqual(await clientConn.unstable_deleteSession({ sessionId: 'sess-sdk-delete' }), {})
+    assert.deepEqual(await clientConn.deleteSession({ sessionId: 'sess-sdk-delete' }), {})
     assert.deepEqual(lister.sessions, [])
     assert.equal(store.get('sess-sdk-delete'), null)
   } finally {

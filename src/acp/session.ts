@@ -190,7 +190,7 @@ export class SessionManager {
       throw e
     }
 
-    let state: any = null
+    let state: any
     try {
       state = (await proc.getState()) as any
     } catch {

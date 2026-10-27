@@ -9,7 +9,7 @@ import { SessionStore } from '../../src/acp/session-store.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn, listedSession } from '../helpers/fakes.js'
 
-test('AtomicAcpAgent: unstable_listSessions lists the last session cwd when cwd param is omitted', async t => {
+test('AtomicAcpAgent: listSessions lists the last session cwd when cwd param is omitted', async t => {
   const root = mkdtempSync(join(tmpdir(), 'atomic-acp-test-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const cwds: string[] = []
@@ -23,7 +23,7 @@ test('AtomicAcpAgent: unstable_listSessions lists the last session cwd when cwd 
   Object.defineProperty(agent, 'store', { value: new SessionStore(join(root, 'session-map.json')) })
   ;(agent as any).lastSessionCwd = '/cwd/a'
 
-  const listed = await agent.unstable_listSessions({})
+  const listed = await agent.listSessions({})
 
   assert.deepEqual(cwds, ['/cwd/a'])
   assert.deepEqual(
