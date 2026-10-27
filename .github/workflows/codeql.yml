@@ -13,7 +13,8 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    # A Restricted profile, as in test.yml: this workflow runs fork pull requests.
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic-acp.ci.codeql.linux-amd64
     timeout-minutes: 30
     permissions:
       security-events: write
