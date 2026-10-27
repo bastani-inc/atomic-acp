@@ -51,7 +51,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.23.0",
     "cross-spawn": "^7.0.6",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@bastani/atomic": "0.9.45",
