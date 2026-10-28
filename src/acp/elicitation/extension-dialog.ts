@@ -4,7 +4,7 @@ import {
   type ElicitationPropertySchema,
   type InitializeRequest
 } from '@agentclientprotocol/sdk'
-import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../atomic-rpc/process.js'
+import type { AtomicExtensionUiResponse, AtomicQuestionAnswer, AtomicRpcEvent } from '../../atomic-rpc/process.js'
 
 export type ClientElicitationSupport = { form: true } | { form: false; reason: 'missing_client_capability' }
 
@@ -58,6 +58,15 @@ async function requestDialog(
   const id = String(ev.id)
   const cancelled: AtomicExtensionUiResponse = { type: 'extension_ui_response', id, cancelled: true }
   const method = ev.method
+  if (method === 'questionnaire') {
+    if (!form) return cancelled
+    try {
+      return await requestQuestionnaire(conn, sessionId, id, ev.questions)
+    } catch {
+      onClientCannotAnswer?.()
+      return cancelled
+    }
+  }
   const options = Array.isArray(ev.options) ? ev.options.map(String) : []
   if (method === 'select' && !options.length) return cancelled
   const title = typeof ev.title === 'string' ? ev.title : `Atomic ${method}`
@@ -116,4 +125,79 @@ async function requestDialog(
     onClientCannotAnswer?.()
     return cancelled
   }
+}
+
+type Question = {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: Array<{ label: string; description?: string }>
+}
+
+function readQuestions(value: unknown): Question[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const questions: Question[] = []
+  for (const item of value) {
+    const q = item as Partial<Question> | null
+    if (!q || typeof q.question !== 'string' || !Array.isArray(q.options) || q.options.length === 0) return undefined
+    const options = q.options.filter(
+      (option): option is Question['options'][number] => typeof option?.label === 'string' && option.label !== ''
+    )
+    if (options.length !== q.options.length) return undefined
+    questions.push({
+      question: q.question,
+      ...(typeof q.header === 'string' ? { header: q.header } : {}),
+      multiSelect: q.multiSelect === true,
+      options
+    })
+  }
+  return questions
+}
+
+/**
+ * An `ask_user_question` call as one form: a field per question, a string enum for a single choice and an array for
+ * a multi-select. Each option's description goes in the field's description, since a plain enum carries labels only.
+ */
+async function requestQuestionnaire(
+  conn: AgentContext,
+  sessionId: string,
+  id: string,
+  rawQuestions: unknown
+): Promise<AtomicExtensionUiResponse> {
+  const cancelled: AtomicExtensionUiResponse = { type: 'extension_ui_response', id, cancelled: true }
+  const questions = readQuestions(rawQuestions)
+  if (!questions) return cancelled
+  const properties: Record<string, ElicitationPropertySchema> = {}
+  questions.forEach((q, index) => {
+    const labels = q.options.map(option => option.label)
+    const described = q.options.filter(option => option.description)
+    const description = [q.question, ...described.map(option => `${option.label}: ${option.description}`)].join('\n')
+    const title = q.header || q.question
+    properties[`q${index}`] = q.multiSelect
+      ? { type: 'array', title, description, minItems: 1, items: { type: 'string', enum: labels } }
+      : { type: 'string', title, description, enum: labels }
+  })
+  const response = await conn.request(methods.client.elicitation.create, {
+    sessionId,
+    mode: 'form',
+    message: questions.length === 1 ? questions[0]!.question : 'Atomic has some questions for you.',
+    requestedSchema: { type: 'object', properties, required: Object.keys(properties) },
+    _meta: { atomicAcp: { kind: 'extension_ui', method: 'questionnaire', atomicRequestId: id } }
+  })
+  if (response.action !== 'accept') return cancelled
+  const content = (response.content ?? {}) as Record<string, unknown>
+  const answers: AtomicQuestionAnswer[] = []
+  for (const [index, q] of questions.entries()) {
+    const labels = q.options.map(option => option.label)
+    const value = content[`q${index}`]
+    if (q.multiSelect) {
+      if (!Array.isArray(value) || value.length === 0 || !value.every(v => typeof v === 'string' && labels.includes(v)))
+        return cancelled
+      answers.push({ questionIndex: index, question: q.question, kind: 'multi', answer: null, selected: value })
+    } else {
+      if (typeof value !== 'string' || !labels.includes(value)) return cancelled
+      answers.push({ questionIndex: index, question: q.question, kind: 'option', answer: value })
+    }
+  }
+  return { type: 'extension_ui_response', id, answers }
 }

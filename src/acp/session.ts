@@ -181,7 +181,8 @@ export class SessionManager {
         cwd: params.cwd,
         atomicCommand: params.atomicCommand,
         mcpServers: atomicMcpServersForSpawn(params.mcpServers),
-        headless: params.headless
+        headless: params.headless,
+        answersQuestionnaires: params.clientElicitationSupport?.form === true
       })
     } catch (e) {
       if (e instanceof AtomicRpcSpawnError) {
@@ -707,7 +708,7 @@ export class AtomicAcpSession {
       })
       return
     }
-    if (!['select', 'confirm', 'input', 'editor'].includes(String(method))) return
+    if (!['select', 'confirm', 'input', 'editor', 'questionnaire'].includes(String(method))) return
     if (this.pendingExtensionDialogs.has(id)) return
     const question = typeof ev.title === 'string' && ev.title ? ev.title : `Atomic ${method}`
     const noPersonAvailable = () =>

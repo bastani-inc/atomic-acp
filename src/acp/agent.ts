@@ -251,7 +251,8 @@ export class AtomicAcpAgent {
         sessionId,
         atomicCommand: process.env.ATOMIC_ACP_ATOMIC_COMMAND,
         mcpServers: atomicMcpServersForSpawn(mcpServers),
-        headless: isHeadlessFromEnv()
+        headless: isHeadlessFromEnv(),
+        answersQuestionnaires: this.clientElicitationSupport.form
       })
     } catch (error) {
       if (error instanceof AtomicRpcSpawnError) throw RequestError.internalError({ code: error.code }, error.message)
