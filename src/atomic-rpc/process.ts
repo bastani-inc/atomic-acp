@@ -1,11 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
-import {
-  getAtomicCommand,
-  parseAtomicExtraArgs,
-  shouldUseShellForAtomicCommand,
-  withExcludedTool
-} from './command.js'
+import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand, withExcludedTool } from './command.js'
 import { writeAdapterExtension, type AdapterExtensionFile, type AdapterMcpServer } from './adapter-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
