@@ -1,4 +1,9 @@
-import type { AgentSideConnection, ElicitationPropertySchema, InitializeRequest } from '@agentclientprotocol/sdk'
+import {
+  methods,
+  type AgentContext,
+  type ElicitationPropertySchema,
+  type InitializeRequest
+} from '@agentclientprotocol/sdk'
 import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../atomic-rpc/process.js'
 
 export type ClientElicitationSupport = { form: true } | { form: false; reason: 'missing_client_capability' }
@@ -18,7 +23,7 @@ export function readClientElicitationSupport(params: InitializeRequest): ClientE
 }
 
 export function requestExtensionDialog(
-  conn: AgentSideConnection,
+  conn: AgentContext,
   sessionId: string,
   ev: AtomicRpcEvent,
   form: boolean,
@@ -38,13 +43,13 @@ export function requestExtensionDialog(
     }
     const abort = () => finish(cancelled)
     signal?.addEventListener('abort', abort, { once: true })
-    // The ACP SDK has no per-request cancellation; settle locally and ignore late replies.
+    // Settle locally and ignore a late reply rather than send ACP's $/cancel_request, which older clients don't know.
     void requestDialog(conn, sessionId, ev, form, onClientCannotAnswer).then(finish)
   })
 }
 
 async function requestDialog(
-  conn: AgentSideConnection,
+  conn: AgentContext,
   sessionId: string,
   ev: AtomicRpcEvent,
   form: boolean,
@@ -68,7 +73,7 @@ async function requestDialog(
           ...(typeof ev.placeholder === 'string' ? { description: ev.placeholder } : {}),
           ...(typeof ev.prefill === 'string' ? { default: ev.prefill } : {})
         }
-      const response = await conn.createElicitation({
+      const response = await conn.request(methods.client.elicitation.create, {
         sessionId,
         mode: 'form',
         message: typeof ev.message === 'string' ? `${title}\n\n${ev.message}` : title,
@@ -87,7 +92,7 @@ async function requestDialog(
     for (const key of ['title', 'message', 'options', 'placeholder', 'prefill']) {
       if (Object.hasOwn(ev, key)) rawInput[key] = ev[key]
     }
-    const response = await conn.requestPermission({
+    const response = await conn.request(methods.client.session.requestPermission, {
       sessionId,
       toolCall: { toolCallId: `atomic-ui-${id}`, title, kind: 'other', status: 'pending', rawInput },
       options:
@@ -96,7 +101,7 @@ async function requestDialog(
               { optionId: 'yes', name: 'Yes', kind: 'allow_once' },
               { optionId: 'no', name: 'No', kind: 'reject_once' }
             ]
-          : options.map((name, index) => ({ optionId: `choice-${index}`, name, kind: 'allow_once' }))
+          : options.map((name, index) => ({ optionId: `choice-${index}`, name, kind: 'allow_once' as const }))
     })
     if (response.outcome.outcome !== 'selected') return cancelled
     const optionId = response.outcome.optionId

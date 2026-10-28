@@ -86,8 +86,10 @@ export function toAtomicMcpServers(servers: readonly McpServer[]): {
         exposure: 'direct'
       })
     } else {
-      const type = 'type' in server ? String(server.type) : 'unknown'
-      warnings.push(`MCP server "${server.name}" skipped: Atomic does not support the ${type} transport`)
+      // Transports the stable schema lacks, such as MCP-over-ACP, if a caller passes one anyway.
+      const other: { name: string; type?: unknown } = server
+      const type = 'type' in other ? String(other.type) : 'unknown'
+      warnings.push(`MCP server "${other.name}" skipped: Atomic does not support the ${type} transport`)
     }
   }
 

@@ -1,5 +1,5 @@
-import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
-import { AtomicAcpAgent, readNearestPackageJson } from './acp/agent.js'
+import { ndJsonStream } from '@agentclientprotocol/sdk'
+import { atomicAcpApp, readNearestPackageJson, type AtomicAcpAgent } from './acp/agent.js'
 import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './atomic-rpc/command.js'
 import { parseCliArgs, USAGE } from './cli.js'
 
@@ -74,12 +74,13 @@ const output = new ReadableStream<Uint8Array>({
 
 const stream = ndJsonStream(input, output)
 
-const agent = new AgentSideConnection(conn => new AtomicAcpAgent(conn), stream)
+let atomicAgent: AtomicAcpAgent | undefined
+atomicAcpApp(created => (atomicAgent = created)).connect(stream)
 
 function shutdown() {
   try {
     // Best-effort: dispose session subprocesses when the client disconnects.
-    ;(agent as any)?.agent?.dispose?.()
+    atomicAgent?.dispose()
   } catch {
     // ignore
   }

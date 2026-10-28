@@ -4,7 +4,7 @@ import {
   type ClientElicitationSupport
 } from './elicitation/extension-dialog.js'
 import type {
-  AgentSideConnection,
+  AgentContext,
   ContentBlock,
   McpServer,
   SessionUpdate,
@@ -12,7 +12,7 @@ import type {
   ToolCallLocation,
   ToolKind
 } from '@agentclientprotocol/sdk'
-import { RequestError } from '@agentclientprotocol/sdk'
+import { RequestError, methods } from '@agentclientprotocol/sdk'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
@@ -44,7 +44,7 @@ import { parseWorkflowEvent, type WorkflowEvent } from './translate/workflow-eve
 type SessionCreateParams = {
   cwd: string
   mcpServers: McpServer[]
-  conn: AgentSideConnection
+  conn: AgentContext
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   atomicCommand?: string
   clientElicitationSupport?: ClientElicitationSupport
@@ -257,7 +257,7 @@ export class AtomicAcpSession {
   private titleUpdateQueue: Promise<void> = Promise.resolve()
 
   readonly proc: AtomicRpcProcess
-  private readonly conn: AgentSideConnection
+  private readonly conn: AgentContext
   private readonly clientElicitationSupport: ClientElicitationSupport
   private readonly headless: boolean
   private fileCommands: FileSlashCommand[]
@@ -304,7 +304,7 @@ export class AtomicAcpSession {
     cwd: string
     mcpServers: McpServer[]
     proc: AtomicRpcProcess
-    conn: AgentSideConnection
+    conn: AgentContext
     fileCommands?: FileSlashCommand[]
     clientElicitationSupport?: ClientElicitationSupport
     autoTitle?: boolean
@@ -487,7 +487,7 @@ export class AtomicAcpSession {
     // Serialize update delivery.
     this.lastEmit = this.lastEmit
       .then(() =>
-        this.conn.sessionUpdate({
+        this.conn.notify(methods.client.session.update, {
           sessionId: this.sessionId,
           update
         })
