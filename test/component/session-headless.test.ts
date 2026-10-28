@@ -103,6 +103,32 @@ test('headless Atomic blocks ask_user_question with a clear result and leaves ot
   }
 })
 
+test('headless Atomic leaves ask_user_question out of the session, joining exclusions already asked for', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'atomic-acp-headless-'))
+  let headless: AtomicRpcProcess | undefined
+  let attended: AtomicRpcProcess | undefined
+  try {
+    const atomicCommand = writeFakeAtomicCli(root)
+    headless = await AtomicRpcProcess.spawn({
+      cwd: root,
+      atomicCommand,
+      headless: true,
+      extraArgs: ['--exclude-tools', 'todo']
+    })
+    const { args } = readFakeAtomicReport(root)
+    assert.equal(args.filter(arg => arg === '--exclude-tools').length, 1)
+    assert.equal(args[args.indexOf('--exclude-tools') + 1], 'todo,ask_user_question')
+    await headless.dispose('SIGKILL')
+    headless = undefined
+    attended = await AtomicRpcProcess.spawn({ cwd: root, atomicCommand, extraArgs: [] })
+    assert.equal(readFakeAtomicReport(root).args.includes('--exclude-tools'), false)
+  } finally {
+    await headless?.dispose('SIGKILL')
+    await attended?.dispose('SIGKILL')
+    await removeTempDir(root)
+  }
+})
+
 function workflowEntry(customType: string, data: Record<string, unknown>) {
   return { type: 'entry_appended', entry: { type: 'custom', customType, data } }
 }
