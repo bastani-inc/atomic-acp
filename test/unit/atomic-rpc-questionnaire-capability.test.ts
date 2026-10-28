@@ -14,6 +14,8 @@ function writeFakeAtomic(root: string, refuseCapabilities: boolean): string {
       "const { appendFileSync } = require('node:fs')",
       "const readline = require('node:readline')",
       `const log = ${JSON.stringify(join(root, 'commands.txt'))}`,
+      // Behind a Windows launcher it outlives the stopped cmd.exe until its stdin closes; it must not keep the directory busy.
+      "process.chdir(require('node:os').tmpdir())",
       "readline.createInterface({ input: process.stdin }).on('line', line => {",
       'const command = JSON.parse(line)',
       "appendFileSync(log, command.type + (command.questionnaire === undefined ? '' : ':' + command.questionnaire) + '\\n')",
@@ -41,7 +43,7 @@ async function commandsSent(params: { answersQuestionnaires?: boolean; headless?
     await proc.dispose()
     return readFileSync(join(root, 'commands.txt'), 'utf8').trim().split('\n')
   } finally {
-    rmSync(root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   }
 }
 
