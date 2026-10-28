@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseAtomicExtraArgs } from '../../src/atomic-rpc/command.js'
+import { parseAtomicExtraArgs, withExcludedTool } from '../../src/atomic-rpc/command.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { removeTempDir } from '../helpers/fake-atomic-cli.js'
 
@@ -92,4 +92,14 @@ test('AtomicRpcProcess.spawn appends extra args verbatim without a shell', async
     await proc?.dispose('SIGKILL')
     await removeTempDir(root)
   }
+})
+
+test('withExcludedTool: joins the last --exclude-tools, since Atomic keeps only the last one', () => {
+  const tool = 'ask_user_question'
+  assert.deepEqual(withExcludedTool([], tool), ['--exclude-tools', tool])
+  assert.deepEqual(withExcludedTool(['-e', './x.ts'], tool), ['-e', './x.ts', '--exclude-tools', tool])
+  assert.deepEqual(withExcludedTool(['--exclude-tools', 'todo'], tool), ['--exclude-tools', `todo,${tool}`])
+  assert.deepEqual(withExcludedTool(['-xt', 'a', '-xt', 'b'], tool), ['-xt', 'a', '-xt', `b,${tool}`])
+  assert.deepEqual(withExcludedTool(['--exclude-tools=todo'], tool), [`--exclude-tools=todo,${tool}`])
+  assert.deepEqual(withExcludedTool(['--exclude-tools', `${tool},todo`], tool), ['--exclude-tools', `${tool},todo`])
 })

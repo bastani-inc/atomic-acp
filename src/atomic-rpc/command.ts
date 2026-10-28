@@ -75,3 +75,27 @@ export function parseAtomicExtraArgs(argv: readonly string[], env: NodeJS.Proces
     separator < 0 ? [] : argv.slice(separator + 1).map(arg => validateAtomicArg(arg, 'arguments after --'))
   return [...fromEnv, ...fromArgv]
 }
+
+const EXCLUDE_TOOLS_FLAGS = new Set(['--exclude-tools', '-xt'])
+
+/**
+ * `extraArgs` with `tool` added to Atomic's tool exclusions. Atomic keeps only the last
+ * `--exclude-tools`, so the tool joins that list rather than adding a second flag that would
+ * replace it.
+ */
+export function withExcludedTool(extraArgs: readonly string[], tool: string): string[] {
+  const args = [...extraArgs]
+  const joined = (list: string) => (list.split(',').includes(tool) ? list : list ? `${list},${tool}` : tool)
+  for (let index = args.length - 1; index >= 0; index--) {
+    const arg = args[index]!
+    if (arg.startsWith('--exclude-tools=')) {
+      args[index] = `--exclude-tools=${joined(arg.slice('--exclude-tools='.length))}`
+      return args
+    }
+    if (EXCLUDE_TOOLS_FLAGS.has(arg) && index + 1 < args.length) {
+      args[index + 1] = joined(args[index + 1]!)
+      return args
+    }
+  }
+  return [...args, '--exclude-tools', tool]
+}

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crossSpawn from 'cross-spawn'
-import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from './command.js'
+import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand, withExcludedTool } from './command.js'
 import { writeAdapterExtension, type AdapterExtensionFile, type AdapterMcpServer } from './adapter-extension.js'
 
 export class AtomicRpcSpawnError extends Error {
@@ -138,7 +138,10 @@ type SpawnParams = {
    * Env and header values are literal: Atomic receives them through its environment.
    */
   mcpServers?: Record<string, AdapterMcpServer>
-  /** No person can answer questions: `ask_user_question` returns a clear "no person available" result. */
+  /**
+   * No person can answer questions: the session leaves `ask_user_question` out, and a workflow stage's
+   * call returns a clear "no person available" result.
+   */
   headless?: boolean
   /**
    * The client answers forms, so Atomic sends each `ask_user_question` as one `questionnaire` request. An Atomic
@@ -228,7 +231,9 @@ export class AtomicRpcProcess {
       ...(params.headless ? { askUserQuestionUnavailable: NO_PERSON_FOR_ASK_USER_QUESTION } : {})
     })
     if (adapterExtension) args.push('-e', adapterExtension.path)
-    args.push(...extraArgs)
+    // Headless, the session never offers ask_user_question. The extension's block still answers
+    // a call from a workflow stage, whose sessions don't inherit the exclusion.
+    args.push(...(params.headless ? withExcludedTool(extraArgs, 'ask_user_question') : extraArgs))
 
     const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn
     let child: ChildProcessWithoutNullStreams
