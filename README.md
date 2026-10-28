@@ -73,6 +73,7 @@ Without a global install, use `"command": "npx", "args": ["-y", "@bastani/atomic
 - The model and thinking pickers list what your Atomic setup offers, and the context indicator shows how full the context is.
 - Prompt templates, skills (`/skill:name`) and extension commands such as `/workflow` appear in the slash menu.
 - When Atomic asks you to pick, confirm or type something, the editor shows a form.
+- `ask_user_question` shows all of its questions in one form, multi-select included.
 - MCP servers the editor configures reach the thread's Atomic process, and their tools are callable as `mcp__<server>__<tool>`. Stdio and HTTP servers work, SSE servers are skipped. `atomic-acp` never writes to your Atomic MCP config, and a server you define there under the same name wins.
 - If Atomic exits during a message, the message fails with the reason, and the next message starts Atomic again on the same session.
 
@@ -132,7 +133,7 @@ With `ATOMIC_ACP_HEADLESS=1`, questions end at once instead of waiting. `ask_use
 
 ## Limitations
 
-- `ask_user_question` can't be answered over ACP, because Atomic's RPC mode can't carry its UI.
+- `ask_user_question` needs Atomic 0.9.50 or newer and an editor that supports ACP forms (elicitation). Without them, the question can't be answered.
 - Atomic reads, writes and runs commands itself. The editor's file and terminal APIs aren't used.
 - Messages sent while Atomic is busy are queued and sent one at a time.
 - Zed is the tested client. Other ACP clients should work but may render some updates differently.

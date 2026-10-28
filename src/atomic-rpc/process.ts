@@ -50,6 +50,7 @@ export function splitLfJsonlChunk(buffer: string, chunk: string): { lines: strin
 type AtomicRpcCommand =
   | { type: 'prompt'; id?: string; message: string; images?: unknown[]; streamingBehavior?: 'followUp' }
   | { type: 'abort'; id?: string }
+  | { type: 'set_extension_ui_capabilities'; id?: string; questionnaire?: boolean }
   | { type: 'get_state'; id?: string }
   // Model
   | { type: 'get_available_models'; id?: string }
@@ -86,8 +87,18 @@ type AtomicRpcResponse = {
   error?: string
 }
 
+/** One `ask_user_question` answer, as Atomic's RPC `questionnaire` response carries it. */
+export type AtomicQuestionAnswer = {
+  questionIndex: number
+  question: string
+  kind: 'option' | 'multi'
+  answer: string | null
+  selected?: string[]
+}
+
 export type AtomicExtensionUiResponse =
   | { type: 'extension_ui_response'; id: string; value: string }
+  | { type: 'extension_ui_response'; id: string; answers: AtomicQuestionAnswer[] }
   | { type: 'extension_ui_response'; id: string; confirmed: boolean }
   | {
       type: 'extension_ui_response'
@@ -129,6 +140,11 @@ type SpawnParams = {
   mcpServers?: Record<string, AdapterMcpServer>
   /** No person can answer questions: `ask_user_question` returns a clear "no person available" result. */
   headless?: boolean
+  /**
+   * The client answers forms, so Atomic sends each `ask_user_question` as one `questionnaire` request. An Atomic
+   * before 0.9.50 refuses the command and `ask_user_question` stays unavailable, as before.
+   */
+  answersQuestionnaires?: boolean
   /** Extra Atomic arguments; defaults to ATOMIC_ACP_ATOMIC_ARGS plus the adapter's args after `--`. */
   extraArgs?: string[]
 }
@@ -281,6 +297,9 @@ export class AtomicRpcProcess {
       await proc.getState()
     } catch {
       // ignore for now
+    }
+    if (params.answersQuestionnaires && !params.headless) {
+      await proc.request({ type: 'set_extension_ui_capabilities', questionnaire: true }).catch(() => undefined)
     }
 
     return proc

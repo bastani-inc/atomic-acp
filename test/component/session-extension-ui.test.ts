@@ -249,3 +249,93 @@ for (const elicitation of [{}, { url: {} }, { form: null, url: {} }]) {
     ])
   })
 }
+
+const questionnaire = {
+  type: 'extension_ui_request',
+  id: 'ask',
+  method: 'questionnaire',
+  questions: [
+    {
+      question: 'Which storage should runs use?',
+      header: 'Storage',
+      options: [
+        { label: 'SQLite', description: 'A local file' },
+        { label: 'libSQL', description: 'A shared database' }
+      ]
+    },
+    {
+      question: 'Which checks should run?',
+      header: 'Checks',
+      multiSelect: true,
+      options: [{ label: 'Unit' }, { label: 'Integration' }]
+    }
+  ]
+}
+
+test('ask_user_question becomes one ACP form, and its answers go back to Atomic', async () => {
+  const { conn, proc } = setup(true)
+  conn.elicitationResponses.push({ action: 'accept', content: { q0: 'libSQL', q1: ['Unit', 'Integration'] } })
+  proc.emit(questionnaire)
+  await flush()
+  assert.equal(conn.elicitationRequests.length, 1)
+  const request = conn.elicitationRequests[0]!
+  assert.ok(request.mode === 'form')
+  assert.deepEqual(request.requestedSchema, {
+    type: 'object',
+    properties: {
+      q0: {
+        type: 'string',
+        title: 'Storage',
+        description: 'Which storage should runs use?\nSQLite: A local file\nlibSQL: A shared database',
+        enum: ['SQLite', 'libSQL']
+      },
+      q1: {
+        type: 'array',
+        title: 'Checks',
+        description: 'Which checks should run?',
+        minItems: 1,
+        items: { type: 'string', enum: ['Unit', 'Integration'] }
+      }
+    },
+    required: ['q0', 'q1']
+  })
+  assert.deepEqual(proc.extensionUiResponses, [
+    {
+      type: 'extension_ui_response',
+      id: 'ask',
+      answers: [
+        { questionIndex: 0, question: 'Which storage should runs use?', kind: 'option', answer: 'libSQL' },
+        {
+          questionIndex: 1,
+          question: 'Which checks should run?',
+          kind: 'multi',
+          answer: null,
+          selected: ['Unit', 'Integration']
+        }
+      ]
+    }
+  ])
+})
+
+for (const [name, response] of [
+  ['declined', { action: 'decline' }],
+  ['answered with an unknown label', { action: 'accept', content: { q0: 'Postgres', q1: ['Unit'] } }],
+  ['answered with no checks', { action: 'accept', content: { q0: 'SQLite', q1: [] } }]
+] as const) {
+  test(`an ask_user_question form ${name} is cancelled in Atomic`, async () => {
+    const { conn, proc } = setup(true)
+    conn.elicitationResponses.push(response as never)
+    proc.emit(questionnaire)
+    await flush()
+    assert.deepEqual(proc.extensionUiResponses, [{ type: 'extension_ui_response', id: 'ask', cancelled: true }])
+  })
+}
+
+test('a client without forms never gets an ask_user_question form', async () => {
+  const { conn, proc } = setup(false)
+  proc.emit(questionnaire)
+  await flush()
+  assert.equal(conn.elicitationRequests.length, 0)
+  assert.equal(conn.permissionRequests.length, 0)
+  assert.deepEqual(proc.extensionUiResponses, [{ type: 'extension_ui_response', id: 'ask', cancelled: true }])
+})
