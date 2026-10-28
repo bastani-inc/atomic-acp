@@ -10,9 +10,11 @@ import {
   isBashTool
 } from './translate/bash.js'
 import {
+  agent,
+  methods,
   RequestError,
-  type Agent as ACPAgent,
-  type AgentSideConnection,
+  type AgentApp,
+  type AgentContext,
   type AuthenticateRequest,
   type CancelNotification,
   type DeleteSessionRequest,
@@ -128,8 +130,8 @@ import { fileURLToPath } from 'node:url'
 
 const pkg = readNearestPackageJson(import.meta.url)
 
-export class AtomicAcpAgent implements ACPAgent {
-  private readonly conn: AgentSideConnection
+export class AtomicAcpAgent {
+  private readonly conn: AgentContext
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
   private readonly sessionOperations = new Map<string, Promise<void>>()
@@ -142,7 +144,7 @@ export class AtomicAcpAgent implements ACPAgent {
   // Remember recent session cwd and use it as the default filter.
   private lastSessionCwd: string | null = null
 
-  constructor(conn: AgentSideConnection, _config?: unknown) {
+  constructor(conn: AgentContext, _config?: unknown) {
     this.conn = conn
     void _config
   }
@@ -474,7 +476,7 @@ export class AtomicAcpAgent implements ACPAgent {
             includeExtensionCommands: true
           })
 
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
@@ -486,7 +488,7 @@ export class AtomicAcpAgent implements ACPAgent {
           // Fall back to file-based prompt templates (legacy behavior).
         }
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
@@ -534,7 +536,7 @@ export class AtomicAcpAgent implements ACPAgent {
             text = `Could not read workflow history: ${error instanceof Error ? error.message : String(error)}`
           }
         }
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -559,7 +561,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         const text = headerLines.join('\n') + (summary ? `\n\n${summary}` : '')
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -594,7 +596,7 @@ export class AtomicAcpAgent implements ACPAgent {
         // Fallback if stats shape changes.
         const text = lines.length ? lines.join('\n') : `Session stats:\n${JSON.stringify(stats, null, 2)}`
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -608,7 +610,7 @@ export class AtomicAcpAgent implements ACPAgent {
       if (cmd === 'name') {
         const name = args.join(' ').trim()
         if (!name) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -626,7 +628,7 @@ export class AtomicAcpAgent implements ACPAgent {
             ? ' This requires a newer Atomic version that supports `set_session_name` in RPC mode.'
             : ''
 
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -636,7 +638,7 @@ export class AtomicAcpAgent implements ACPAgent {
           return { stopReason: 'end_turn' }
         }
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -654,7 +656,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         // If no arg, just report current.
         if (!modeRaw) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -668,7 +670,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         if (modeRaw !== 'all' && modeRaw !== 'one-at-a-time') {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -683,7 +685,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         await session.proc.setSteeringMode(modeRaw as 'all' | 'one-at-a-time')
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -701,7 +703,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         // If no arg, just report current.
         if (!modeRaw) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -715,7 +717,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         if (modeRaw !== 'all' && modeRaw !== 'one-at-a-time') {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -730,7 +732,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         await session.proc.setFollowUpMode(modeRaw as 'all' | 'one-at-a-time')
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -776,7 +778,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         const changelogPath = findChangelog()
         if (!changelogPath) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -790,7 +792,7 @@ export class AtomicAcpAgent implements ACPAgent {
         try {
           text = readFileSync(changelogPath, 'utf-8')
         } catch (e: any) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -804,7 +806,7 @@ export class AtomicAcpAgent implements ACPAgent {
         const maxChars = 20_000
         if (text.length > maxChars) text = text.slice(0, maxChars) + '\n\n...(truncated)...'
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -820,7 +822,7 @@ export class AtomicAcpAgent implements ACPAgent {
         const state = (await session.proc.getState()) as any
         const messageCount = typeof state?.messageCount === 'number' ? state.messageCount : 0
         if (messageCount === 0) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -838,7 +840,7 @@ export class AtomicAcpAgent implements ACPAgent {
           const result = await session.proc.exportHtml(outputPath)
           resultPath = result.path
         } catch (e: any) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -852,7 +854,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         if (!resultPath) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -869,7 +871,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         // Emit a short prefix + a resource link. Many clients concatenate chunks into a single
         // assistant message, so this avoids the "link + duplicate plain text" look.
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -880,7 +882,7 @@ export class AtomicAcpAgent implements ACPAgent {
           }
         })
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -912,7 +914,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         await session.proc.setAutoCompaction(enabled)
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
@@ -1028,7 +1030,7 @@ export class AtomicAcpAgent implements ACPAgent {
       if (role === 'user') {
         const text = normalizeAtomicMessageText(m?.content)
         if (text) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'user_message_chunk',
@@ -1041,7 +1043,7 @@ export class AtomicAcpAgent implements ACPAgent {
       if (role === 'assistant') {
         const text = normalizeAtomicAssistantText(m?.content)
         if (text) {
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -1058,7 +1060,7 @@ export class AtomicAcpAgent implements ACPAgent {
 
         if (isBashTool(toolName)) {
           const text = bashResultText(m)
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'tool_call',
@@ -1070,7 +1072,7 @@ export class AtomicAcpAgent implements ACPAgent {
               _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
             }
           })
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'tool_call_update',
@@ -1086,7 +1088,7 @@ export class AtomicAcpAgent implements ACPAgent {
         }
 
         // Create a synthetic ACP tool call to render historic tool usage.
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'tool_call',
@@ -1100,7 +1102,7 @@ export class AtomicAcpAgent implements ACPAgent {
         })
 
         const text = toolResultToText(m)
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'tool_call_update',
@@ -1136,7 +1138,7 @@ export class AtomicAcpAgent implements ACPAgent {
             includeExtensionCommands: true
           })
 
-          await this.conn.sessionUpdate({
+          await this.conn.notify(methods.client.session.update, {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'available_commands_update',
@@ -1148,7 +1150,7 @@ export class AtomicAcpAgent implements ACPAgent {
           // fall back
         }
 
-        await this.conn.sessionUpdate({
+        await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'available_commands_update',
@@ -1203,6 +1205,26 @@ export class AtomicAcpAgent implements ACPAgent {
     if (params.configId === MODEL_CONFIG_ID) await session.publishContextUsage()
     return { configOptions }
   }
+}
+
+/** The ACP app for one connection; `onAgent` receives the connection's `AtomicAcpAgent`. */
+export function atomicAcpApp(onAgent?: (atomicAgent: AtomicAcpAgent) => void): AgentApp {
+  let atomicAgent!: AtomicAcpAgent
+  return agent({ name: 'atomic-acp' })
+    .onConnect(connection => {
+      atomicAgent = new AtomicAcpAgent(connection.client)
+      onAgent?.(atomicAgent)
+    })
+    .onRequest(methods.agent.initialize, ({ params }) => atomicAgent.initialize(params))
+    .onRequest(methods.agent.authenticate, ({ params }) => atomicAgent.authenticate(params))
+    .onRequest(methods.agent.session.new, ({ params }) => atomicAgent.newSession(params))
+    .onRequest(methods.agent.session.load, ({ params }) => atomicAgent.loadSession(params))
+    .onRequest(methods.agent.session.list, ({ params }) => atomicAgent.listSessions(params))
+    .onRequest(methods.agent.session.delete, ({ params }) => atomicAgent.deleteSession(params))
+    .onRequest(methods.agent.session.setMode, ({ params }) => atomicAgent.setSessionMode(params))
+    .onRequest(methods.agent.session.setConfigOption, ({ params }) => atomicAgent.setSessionConfigOption(params))
+    .onRequest(methods.agent.session.prompt, ({ params }) => atomicAgent.prompt(params))
+    .onNotification(methods.agent.session.cancel, ({ params }) => atomicAgent.cancel(params))
 }
 
 /**
@@ -1281,16 +1303,19 @@ async function getSessionConfiguration(proc: AtomicRpcProcess, pre?: { state?: u
 }
 
 async function emitConfigOptionsUpdate(
-  conn: AgentSideConnection,
+  conn: AgentContext,
   sessionId: string,
   proc: AtomicRpcProcess
 ): Promise<SessionConfigOption[]> {
   const { configOptions, modes } = await getSessionConfiguration(proc)
-  await conn.sessionUpdate({
+  await conn.notify(methods.client.session.update, {
     sessionId,
     update: { sessionUpdate: 'current_mode_update', currentModeId: modes.currentModeId }
   })
-  await conn.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions } })
+  await conn.notify(methods.client.session.update, {
+    sessionId,
+    update: { sessionUpdate: 'config_option_update', configOptions }
+  })
   return configOptions
 }
 

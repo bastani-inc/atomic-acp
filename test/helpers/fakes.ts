@@ -1,23 +1,45 @@
-import type { AgentSideConnection, CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
+import {
+  methods,
+  type AgentContext,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SessionNotification
+} from '@agentclientprotocol/sdk'
 import type { AtomicExtensionUiResponse, AtomicRpcEvent } from '../../src/atomic-rpc/process.js'
 
-type SessionUpdateMsg = Parameters<AgentSideConnection['sessionUpdate']>[0]
-
+/**
+ * Stands in for the agent's `AgentContext`: `request` and `notify` dispatch to the per-method
+ * handlers below, which tests can replace or spy on.
+ */
 export class FakeAgentSideConnection {
-  readonly updates: SessionUpdateMsg[] = []
+  readonly updates: SessionNotification[] = []
   readonly elicitationRequests: CreateElicitationRequest[] = []
   elicitationResponses: Array<CreateElicitationResponse | Promise<CreateElicitationResponse>> = []
-  readonly permissionRequests: Parameters<AgentSideConnection['requestPermission']>[0][] = []
-  nextPermissionResponse: Awaited<ReturnType<AgentSideConnection['requestPermission']>> = {
+  readonly permissionRequests: RequestPermissionRequest[] = []
+  nextPermissionResponse: RequestPermissionResponse = {
     outcome: { outcome: 'cancelled' }
   }
 
-  async requestPermission(params: Parameters<AgentSideConnection['requestPermission']>[0]) {
+  async request(method: string, params: unknown): Promise<unknown> {
+    if (method === methods.client.session.requestPermission)
+      return this.requestPermission(params as RequestPermissionRequest)
+    if (method === methods.client.elicitation.create) return this.createElicitation(params as CreateElicitationRequest)
+    throw new Error(`Unexpected client request: ${method}`)
+  }
+
+  async notify(method: string, params: unknown): Promise<void> {
+    if (method !== methods.client.session.update) throw new Error(`Unexpected client notification: ${method}`)
+    return this.sessionUpdate(params as SessionNotification)
+  }
+
+  async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     this.permissionRequests.push(params)
     return this.nextPermissionResponse
   }
 
-  async sessionUpdate(msg: SessionUpdateMsg): Promise<void> {
+  async sessionUpdate(msg: SessionNotification): Promise<void> {
     this.updates.push(msg)
   }
 
@@ -147,7 +169,7 @@ export function listedSession(
   }
 }
 
-export function asAgentConn(conn: FakeAgentSideConnection): AgentSideConnection {
+export function asAgentConn(conn: FakeAgentSideConnection): AgentContext {
   // We only implement the method(s) used by AtomicAcpSession in tests.
-  return conn as unknown as AgentSideConnection
+  return conn as unknown as AgentContext
 }

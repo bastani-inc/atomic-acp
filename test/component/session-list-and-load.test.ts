@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TransformStream } from 'node:stream/web'
-import { AgentSideConnection, ClientSideConnection } from '@agentclientprotocol/sdk'
+import { client, methods } from '@agentclientprotocol/sdk'
 
-import { AtomicAcpAgent } from '../../src/acp/agent.js'
+import { AtomicAcpAgent, atomicAcpApp } from '../../src/acp/agent.js'
 import { SessionStore } from '../../src/acp/session-store.js'
 import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn, listedSession } from '../helpers/fakes.js'
@@ -191,33 +191,24 @@ test('AtomicAcpAgent: SDK dispatches session/list to stable listSessions after i
   const streams = createAcpMemoryStreams()
 
   try {
-    const agentConn = new AgentSideConnection(conn => {
-      const agent = new AtomicAcpAgent(conn)
-      Object.defineProperty(agent, 'store', { value: store })
-      return agent
-    }, streams.agentStream)
-    void agentConn
+    atomicAcpApp(agent => Object.defineProperty(agent, 'store', { value: store })).connect(streams.agentStream)
 
-    const clientConn = new ClientSideConnection(
-      () =>
-        ({
-          requestPermission: async () => {
-            throw new Error('requestPermission should not be called by session/list')
-          },
-          sessionUpdate: async () => {
-            // no-op
-          }
-        }) as any,
-      streams.clientStream
-    )
+    await client()
+      .onRequest(methods.client.session.requestPermission, async () => {
+        throw new Error('requestPermission should not be called by session/list')
+      })
+      .onNotification(methods.client.session.update, async () => {
+        // no-op
+      })
+      .connectWith(streams.clientStream, async agent => {
+        const initialized = await agent.request(methods.agent.initialize, { protocolVersion: 1 })
+        assert.deepEqual(initialized.agentCapabilities?.sessionCapabilities?.list, {})
 
-    const initialized = await clientConn.initialize({ protocolVersion: 1 } as any)
-    assert.deepEqual((initialized as any).agentCapabilities?.sessionCapabilities?.list, {})
-
-    const listed = await clientConn.listSessions({ cwd: '/tmp/sdk-project' })
-    const s = listed.sessions.find(x => x.sessionId === 'sess-sdk-list')
-    assert.equal(s?.cwd, '/tmp/sdk-project')
-    assert.equal(s?.title, 'SDK Listed Session')
+        const listed = await agent.request(methods.agent.session.list, { cwd: '/tmp/sdk-project' })
+        const s = listed.sessions.find(x => x.sessionId === 'sess-sdk-list')
+        assert.equal(s?.cwd, '/tmp/sdk-project')
+        assert.equal(s?.title, 'SDK Listed Session')
+      })
   } finally {
     await streams.close()
   }
@@ -230,23 +221,18 @@ test('AtomicAcpAgent: SDK dispatches session/delete, which removes the session f
   const streams = createAcpMemoryStreams()
 
   try {
-    const agentConn = new AgentSideConnection(conn => {
-      const agent = new AtomicAcpAgent(conn)
-      Object.defineProperty(agent, 'store', { value: store })
-      return agent
-    }, streams.agentStream)
-    void agentConn
-    const clientConn = new ClientSideConnection(
-      () => ({ requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }), sessionUpdate: async () => {} }),
-      streams.clientStream
-    )
+    atomicAcpApp(agent => Object.defineProperty(agent, 'store', { value: store })).connect(streams.agentStream)
+    await client()
+      .onRequest(methods.client.session.requestPermission, async () => ({ outcome: { outcome: 'cancelled' } }))
+      .onNotification(methods.client.session.update, async () => {})
+      .connectWith(streams.clientStream, async agent => {
+        const initialized = await agent.request(methods.agent.initialize, { protocolVersion: 1 })
+        assert.deepEqual(initialized.agentCapabilities?.sessionCapabilities?.delete, {})
 
-    const initialized = await clientConn.initialize({ protocolVersion: 1 })
-    assert.deepEqual(initialized.agentCapabilities?.sessionCapabilities?.delete, {})
-
-    assert.deepEqual(await clientConn.deleteSession({ sessionId: 'sess-sdk-delete' }), {})
-    assert.deepEqual(lister.sessions, [])
-    assert.equal(store.get('sess-sdk-delete'), null)
+        assert.deepEqual(await agent.request(methods.agent.session.delete, { sessionId: 'sess-sdk-delete' }), {})
+        assert.deepEqual(lister.sessions, [])
+        assert.equal(store.get('sess-sdk-delete'), null)
+      })
   } finally {
     await streams.close()
   }
