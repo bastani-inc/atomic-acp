@@ -43,7 +43,7 @@ export function requestExtensionDialog(
     }
     const abort = () => finish(cancelled)
     signal?.addEventListener('abort', abort, { once: true })
-    // The ACP SDK has no per-request cancellation; settle locally and ignore late replies.
+    // Settle locally and ignore a late reply rather than send ACP's $/cancel_request, which older clients don't know.
     void requestDialog(conn, sessionId, ev, form, onClientCannotAnswer).then(finish)
   })
 }
