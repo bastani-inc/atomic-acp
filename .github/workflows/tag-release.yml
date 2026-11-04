@@ -1,0 +1,57 @@
+name: Tag release
+run-name: Tag release ${{ github.sha }}
+
+# A merged "Release X.Y.Z" commit on main gets its tag here, and this workflow then starts
+# publish.yml for it. A tag pushed with GITHUB_TOKEN starts no workflow, so publish.yml is
+# started with workflow_dispatch, which GITHUB_TOKEN may do.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag a merged release commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.x'
+          package-manager-cache: false
+
+      - name: Tag and start publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          subject=$(git show -s --format=%s HEAD)
+          version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+          release_re="^Release (${version_re})( \(#[0-9]+\))?$"
+          if [[ ! "$subject" =~ $release_re ]]; then
+            echo "Not a release commit: $subject"
+            exit 0
+          fi
+          version="${BASH_REMATCH[1]}"
+          package_version=$(node -p 'require("./package.json").version')
+          [[ "$package_version" == "$version" ]] ||
+            { echo "::error::$subject, but package.json says $package_version." >&2; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$version" >/dev/null; then
+            echo "Tag $version already exists; nothing to do."
+            exit 0
+          fi
+          git tag "$version" "$GITHUB_SHA"
+          git push origin "refs/tags/$version"
+          gh workflow run publish.yml --ref main -f tag="$version"
+          echo "Tagged $version at $GITHUB_SHA and started publish.yml." >> "$GITHUB_STEP_SUMMARY"
