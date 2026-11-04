@@ -152,7 +152,9 @@ npm run build
 
 ## Releasing
 
-Merge a commit titled `Release X.Y.Z` (or `Release X.Y.Z-alpha.N`) that sets that version in `package.json`, then push the tag `X.Y.Z` on it. The [publish workflow](.github/workflows/publish.yml) checks the tag, runs the tests and publishes to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers). Stable versions go to `latest` and alphas to `next`.
+Merge a pull request whose commit is titled `Release X.Y.Z` (or `Release X.Y.Z-alpha.N`) and sets that version in `package.json`. Any merge style works: a squash merge's ` (#N)` suffix is accepted. The [tag-release workflow](.github/workflows/tag-release.yml) then tags that commit and starts the [publish workflow](.github/workflows/publish.yml), which checks the tag, runs the tests and publishes to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers). Stable versions go to `latest` and alphas to `next`.
+
+To publish a tag that already exists, for example after a failed run, start the publish workflow from `main` with that tag: `gh workflow run publish.yml --ref main -f tag=X.Y.Z`.
 
 ## Credits
 
