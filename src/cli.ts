@@ -1,6 +1,6 @@
-export type CliCommand = 'serve' | 'help' | 'version' | 'terminal-login'
+export type CliCommand = "serve" | "help" | "version" | "terminal-login";
 
-export type CliParseResult = { command: CliCommand } | { error: string }
+export type CliParseResult = { command: CliCommand } | { error: string };
 
 export const USAGE = `Usage: atomic-acp [options] [-- <atomic args...>]
 
@@ -12,28 +12,28 @@ Options:
   -v, --version     Show the version and exit
 
 Arguments after -- are passed to every \`atomic --mode rpc\` process.
-`
+`;
 
 const FLAGS: Record<string, CliCommand> = {
-  '-h': 'help',
-  '--help': 'help',
-  '-v': 'version',
-  '--version': 'version',
-  '--terminal-login': 'terminal-login'
-}
+	"-h": "help",
+	"--help": "help",
+	"-v": "version",
+	"--version": "version",
+	"--terminal-login": "terminal-login",
+};
 
-const PRECEDENCE: CliCommand[] = ['help', 'version', 'terminal-login']
+const PRECEDENCE: CliCommand[] = ["help", "version", "terminal-login"];
 
 /** Parses the adapter's own flags, which come before `--`; everything after it belongs to Atomic. */
 export function parseCliArgs(argv: readonly string[]): CliParseResult {
-  const separator = argv.indexOf('--', 2)
-  const adapterArgs = separator < 0 ? argv.slice(2) : argv.slice(2, separator)
-  const commands = new Set<CliCommand>()
-  for (const arg of adapterArgs) {
-    if (!arg.startsWith('-')) continue
-    const command = FLAGS[arg]
-    if (!command) return { error: `unknown option '${arg}'` }
-    commands.add(command)
-  }
-  return { command: PRECEDENCE.find(command => commands.has(command)) ?? 'serve' }
+	const separator = argv.indexOf("--", 2);
+	const adapterArgs = separator < 0 ? argv.slice(2) : argv.slice(2, separator);
+	const commands = new Set<CliCommand>();
+	for (const arg of adapterArgs) {
+		if (!arg.startsWith("-")) continue;
+		const command = FLAGS[arg];
+		if (!command) return { error: `unknown option '${arg}'` };
+		commands.add(command);
+	}
+	return { command: PRECEDENCE.find((command) => commands.has(command)) ?? "serve" };
 }

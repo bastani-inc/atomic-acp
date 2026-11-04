@@ -1,5 +1,5 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Storage owned by the ACP adapter.
@@ -7,9 +7,9 @@ import { join } from 'node:path'
  * We intentionally keep this separate from Atomic's own ~/.atomic/agent/* directory.
  */
 export function getAtomicAcpDir(): string {
-  return join(homedir(), '.atomic', 'atomic-acp')
+	return join(homedir(), ".atomic", "atomic-acp");
 }
 
 export function getAtomicAcpSessionMapPath(): string {
-  return join(getAtomicAcpDir(), 'session-map.json')
+	return join(getAtomicAcpDir(), "session-map.json");
 }

@@ -1,6 +1,6 @@
-import type { AuthMethod } from '@agentclientprotocol/sdk'
+import type { AuthMethod } from "@agentclientprotocol/sdk";
 
-export const ATOMIC_SETUP_METHOD_ID = 'atomic_terminal_login'
+export const ATOMIC_SETUP_METHOD_ID = "atomic_terminal_login";
 
 /**
  * Zed (and some other clients) currently support "Terminal Auth" via an extension field
@@ -11,49 +11,49 @@ export const ATOMIC_SETUP_METHOD_ID = 'atomic_terminal_login'
  *  - `type/args/env`: registry-required shape.
  */
 export function getAuthMethods(opts?: { supportsTerminalAuthMeta?: boolean }): AuthMethod[] {
-  const supportsTerminalAuthMeta = opts?.supportsTerminalAuthMeta ?? true
+	const supportsTerminalAuthMeta = opts?.supportsTerminalAuthMeta ?? true;
 
-  const method: any = {
-    id: ATOMIC_SETUP_METHOD_ID,
-    name: 'Launch Atomic in the terminal',
-    description: 'Start Atomic in an interactive terminal to configure API keys or login',
+	const method: any = {
+		id: ATOMIC_SETUP_METHOD_ID,
+		name: "Launch Atomic in the terminal",
+		description: "Start Atomic in an interactive terminal to configure API keys or login",
 
-    // Registry-required fields
-    type: 'terminal',
-    args: ['--terminal-login'],
-    env: {}
-  }
+		// Registry-required fields
+		type: "terminal",
+		args: ["--terminal-login"],
+		env: {},
+	};
 
-  if (supportsTerminalAuthMeta) {
-    // Best-effort launch spec for Zed's terminal-auth banner.
-    // Zed expects a full command+args (see mistral-vibe implementation).
-    const launch = terminalAuthLaunchSpec()
+	if (supportsTerminalAuthMeta) {
+		// Best-effort launch spec for Zed's terminal-auth banner.
+		// Zed expects a full command+args (see mistral-vibe implementation).
+		const launch = terminalAuthLaunchSpec();
 
-    method._meta = {
-      ...(method._meta ?? {}),
-      'terminal-auth': {
-        ...launch,
-        label: 'Launch Atomic'
-      }
-    }
-  }
+		method._meta = {
+			...(method._meta ?? {}),
+			"terminal-auth": {
+				...launch,
+				label: "Launch Atomic",
+			},
+		};
+	}
 
-  return [method as AuthMethod]
+	return [method as AuthMethod];
 }
 
 function terminalAuthLaunchSpec(): { command: string; args: string[] } {
-  // If we were launched as `node /path/to/dist/index.js`, reuse that.
-  // This is the most reliable in local dev and custom Zed configurations.
-  const argv0 = process.argv[0] || 'node'
-  const argv1 = process.argv[1]
-  if (argv1 && argv0) {
-    const isNode = argv0.includes('node')
-    const isJs = argv1.endsWith('.js')
-    if (isNode && isJs) {
-      return { command: argv0, args: [argv1, '--terminal-login'] }
-    }
-  }
+	// If we were launched as `node /path/to/dist/index.js`, reuse that.
+	// This is the most reliable in local dev and custom Zed configurations.
+	const argv0 = process.argv[0] || "node";
+	const argv1 = process.argv[1];
+	if (argv1 && argv0) {
+		const isNode = argv0.includes("node");
+		const isJs = argv1.endsWith(".js");
+		if (isNode && isJs) {
+			return { command: argv0, args: [argv1, "--terminal-login"] };
+		}
+	}
 
-  // Fallback: assume `atomic-acp` is on PATH.
-  return { command: 'atomic-acp', args: ['--terminal-login'] }
+	// Fallback: assume `atomic-acp` is on PATH.
+	return { command: "atomic-acp", args: ["--terminal-login"] };
 }
