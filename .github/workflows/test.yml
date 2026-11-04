@@ -48,8 +48,6 @@ jobs:
             run: npm run typecheck
           - name: Lint
             run: npm run lint
-          - name: Format check
-            run: npx prettier . --check
           - name: Unit and component tests
             run: npm test
           - name: Build

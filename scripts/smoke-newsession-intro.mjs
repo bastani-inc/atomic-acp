@@ -8,8 +8,7 @@ let gotIntro = false
 
 p.stdout.on('data', d => {
   buf += d.toString('utf8')
-  let idx
-  while ((idx = buf.indexOf('\n')) >= 0) {
+  for (let idx = buf.indexOf('\n'); idx >= 0; idx = buf.indexOf('\n')) {
     const line = buf.slice(0, idx)
     buf = buf.slice(idx + 1)
     if (!line.trim()) continue
@@ -39,7 +38,7 @@ p.stdout.on('data', d => {
 })
 
 function send(obj) {
-  p.stdin.write(JSON.stringify(obj) + '\n')
+  p.stdin.write(`${JSON.stringify(obj)}\n`)
 }
 
 send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1 } })

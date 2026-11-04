@@ -88,6 +88,7 @@ const leakyHeaderServer: McpServer = {
 const expandingUrlServer: McpServer = {
   type: 'http',
   name: 'expanding',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
   url: 'https://example.com/mcp?token=${ACP_URL_SECRET}',
   headers: []
 }

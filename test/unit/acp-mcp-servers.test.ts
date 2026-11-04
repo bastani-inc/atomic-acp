@@ -54,6 +54,7 @@ test('toAtomicMcpServers: passes env and header values through unchanged', () =>
       args: [],
       env: [
         { name: 'A', value: '!rm -rf /' },
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
         { name: 'B', value: 'cost: $5 ${HOME} $USER' }
       ]
     },
@@ -68,6 +69,7 @@ test('toAtomicMcpServers: passes env and header values through unchanged', () =>
   assert.deepEqual(servers.literal, {
     command: 'tool',
     args: [],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
     env: { A: '!rm -rf /', B: 'cost: $5 ${HOME} $USER' },
     exposure: 'direct'
   })
@@ -103,7 +105,7 @@ test('toAtomicMcpServers: normalizes names to Atomic server names and keeps them
 
   const names = Object.keys(servers)
   for (const name of names) assert.match(name, /^[A-Za-z0-9_-]+$/)
-  assert.deepEqual(servers['My_Tools_'], { command: 'a', args: [], env: {}, exposure: 'direct' })
+  assert.deepEqual(servers.My_Tools_, { command: 'a', args: [], env: {}, exposure: 'direct' })
   assert.equal(names.length, 5)
   const namespaces = names.map(name => name.replace(/-/g, '_'))
   assert.equal(new Set(namespaces).size, names.length)
@@ -142,6 +144,7 @@ test('toAtomicMcpServers: refuses header names and values that could break the r
 })
 
 test('toAtomicMcpServers: refuses URLs that Atomic would expand from its environment', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
   for (const url of ['https://example.com/mcp?token=${SECRET}', 'https://example.com/$ENV:SECRET/mcp']) {
     const error = refusal([{ type: 'http', name: 'docs', url, headers: [] }])
     assert.equal(error.code, -32602)

@@ -29,10 +29,10 @@ const envSecret = `mcp-env-secret-${random()}`
 const headerSecret = `mcp-header-secret-${random()}`
 const literalEnv = {
   ECHO_MARKER_ENV_SECRET: envSecret,
-  ECHO_MARKER_ENV_TEMPLATE: '${HOME} $PATH $$',
+  ECHO_MARKER_ENV_TEMPLATE: `\${HOME} $PATH $$`,
   ECHO_MARKER_ENV_COMMAND: '!echo smoke-command-ran'
 }
-const literalHeaders = { authorization: `Bearer ${headerSecret}`, 'x-literal': '!echo header-command-ran ${HOME}' }
+const literalHeaders = { authorization: `Bearer ${headerSecret}`, 'x-literal': `!echo header-command-ran \${HOME}` }
 const leakSecret = `mcp-leak-secret-${random()}`
 const urlHostSecret = `mcp-url-host-secret-${random()}`
 const httpUrls = []
@@ -105,7 +105,7 @@ child.stdout.on('data', chunk => {
   const lines = buffer.split('\n')
   buffer = lines.pop() ?? ''
   for (const line of lines) {
-    stdout += line + '\n'
+    stdout += `${line}\n`
     if (!line.trim()) continue
     const message = JSON.parse(line)
     if (message.id !== undefined && pending.has(message.id)) {
@@ -125,7 +125,7 @@ function request(method, params) {
   const id = ++nextId
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
   })
 }
 

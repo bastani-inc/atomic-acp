@@ -34,7 +34,7 @@ function loadFile(path: string): SessionMapFile {
 
 function saveFile(path: string, data: SessionMapFile): void {
   ensureParentDir(path)
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, 'utf-8')
 }
 
 export class SessionStore {

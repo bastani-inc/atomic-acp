@@ -52,18 +52,18 @@ test('AtomicRpcProcess.writeExtensionUiResponse writes uncorrelated JSONL withou
   assert.equal(written.length, 2)
   assert.equal(
     written[0],
-    JSON.stringify({
+    `${JSON.stringify({
       type: 'extension_ui_response',
       id: 'select',
       value: 'selected option'
-    }) + '\n'
+    })}\n`
   )
   assert.equal(
     written[1],
-    JSON.stringify({
+    `${JSON.stringify({
       type: 'extension_ui_response',
       id: 'cancel',
       cancelled: true
-    }) + '\n'
+    })}\n`
   )
 })

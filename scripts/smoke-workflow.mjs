@@ -32,7 +32,7 @@ function request(method, params) {
   return new Promise((resolve, reject) => {
     const id = ++nextId
     pending.set(id, { resolve, reject })
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
   })
 }
 const timeout = setTimeout(() => {

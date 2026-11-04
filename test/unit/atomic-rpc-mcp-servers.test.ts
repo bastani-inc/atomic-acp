@@ -59,6 +59,7 @@ test('AtomicRpcProcess keeps MCP env and header values out of the extension, and
     const secret = 'secret-6c1d0b'
     const env = {
       TOKEN: secret,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
       TEMPLATE: '${HOME} $USER $$ ${ATOMIC_ACP_NOPE',
       COMMAND: '!echo pwned',
       EMPTY: ''
@@ -81,6 +82,7 @@ test('AtomicRpcProcess keeps MCP env and header values out of the extension, and
     assert.equal(url.host, 'example.com')
     const [source] = report.sources
     assert.ok(source !== undefined)
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
     for (const value of [secret, '${HOME}', '!echo pwned', '!echo header-command-ran']) {
       assert.ok(!source.includes(value), `extension source must not contain ${value}`)
     }

@@ -18,5 +18,5 @@ test('getAuthMethods: includes Zed terminal-auth metadata when enabled', () => {
 test('getAuthMethods: omits Zed terminal-auth metadata when disabled', () => {
   const methods = getAuthMethods({ supportsTerminalAuthMeta: false })
   const m: any = methods[0]
-  assert.ok(!m._meta || !m._meta['terminal-auth'])
+  assert.ok(!m._meta?.['terminal-auth'])
 })

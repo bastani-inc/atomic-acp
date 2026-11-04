@@ -20,7 +20,7 @@ child.stdout.on('data', chunk => {
 })
 
 function send(obj) {
-  child.stdin.write(JSON.stringify(obj) + '\n')
+  child.stdin.write(`${JSON.stringify(obj)}\n`)
 }
 
 // Basic ACP handshake + one prompt.

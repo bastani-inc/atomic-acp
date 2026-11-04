@@ -25,7 +25,7 @@ function fixture() {
     child as unknown as ChildProcessWithoutNullStreams
   )
   const respond = (data: unknown, id = (JSON.parse(written.at(-1)!) as { id: string }).id) =>
-    stdout.write(JSON.stringify({ type: 'response', command: 'get_session_stats', success: true, id, data }) + '\n')
+    stdout.write(`${JSON.stringify({ type: 'response', command: 'get_session_stats', success: true, id, data })}\n`)
   return { proc, respond, stdout, written }
 }
 
@@ -91,20 +91,20 @@ test('AtomicRpcProcess: workflow history unwraps protocol replies and forwards f
   const listRequest = JSON.parse(written.at(-1)!)
   assert.deepEqual(listRequest, { type: 'list_workflow_runs', status: 'completed', id: listRequest.id })
   stdout.write(
-    JSON.stringify({
+    `${JSON.stringify({
       type: 'response',
       command: listRequest.type,
       success: true,
       id: listRequest.id,
       data: { runs: [run] }
-    }) + '\n'
+    })}\n`
   )
   assert.deepEqual(await listing, { runs: [run] })
   const result = proc.getWorkflowRunSummary('run-1')
   const request = JSON.parse(written.at(-1)!)
   assert.deepEqual(request, { type: 'get_workflow_run_summary', runId: 'run-1', id: request.id })
   stdout.write(
-    JSON.stringify({ type: 'response', command: request.type, success: true, id: request.id, data: run }) + '\n'
+    `${JSON.stringify({ type: 'response', command: request.type, success: true, id: request.id, data: run })}\n`
   )
   assert.deepEqual(await result, run)
 })

@@ -509,7 +509,7 @@ export class AtomicRpcProcess {
   }
 
   private writeJsonLine(value: unknown): Promise<void> {
-    const line = JSON.stringify(value) + '\n'
+    const line = `${JSON.stringify(value)}\n`
 
     return new Promise<void>((resolve, reject) => {
       try {
