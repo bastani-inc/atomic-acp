@@ -1,157 +1,157 @@
 import {
-  methods,
-  type AgentContext,
-  type ElicitationPropertySchema,
-  type InitializeRequest
-} from '@agentclientprotocol/sdk'
-import type { AtomicExtensionUiResponse, AtomicQuestionAnswer, AtomicRpcEvent } from '../../atomic-rpc/process.js'
+	type AgentContext,
+	type ElicitationPropertySchema,
+	type InitializeRequest,
+	methods,
+} from "@agentclientprotocol/sdk";
+import type { AtomicExtensionUiResponse, AtomicQuestionAnswer, AtomicRpcEvent } from "../../atomic-rpc/process.js";
 
-export type ClientElicitationSupport = { form: true } | { form: false; reason: 'missing_client_capability' }
+export type ClientElicitationSupport = { form: true } | { form: false; reason: "missing_client_capability" };
 
 export const NO_CLIENT_ELICITATION_SUPPORT: ClientElicitationSupport = {
-  form: false,
-  reason: 'missing_client_capability'
-}
+	form: false,
+	reason: "missing_client_capability",
+};
 
 export function readClientElicitationSupport(params: InitializeRequest): ClientElicitationSupport {
-  const form = params.clientCapabilities?.elicitation?.form
-  if (form !== null && typeof form === 'object' && !Array.isArray(form)) {
-    return { form: true }
-  }
+	const form = params.clientCapabilities?.elicitation?.form;
+	if (form !== null && typeof form === "object" && !Array.isArray(form)) {
+		return { form: true };
+	}
 
-  return NO_CLIENT_ELICITATION_SUPPORT
+	return NO_CLIENT_ELICITATION_SUPPORT;
 }
 
 export function requestExtensionDialog(
-  conn: AgentContext,
-  sessionId: string,
-  ev: AtomicRpcEvent,
-  form: boolean,
-  signal?: AbortSignal,
-  onClientCannotAnswer?: () => void
+	conn: AgentContext,
+	sessionId: string,
+	ev: AtomicRpcEvent,
+	form: boolean,
+	signal?: AbortSignal,
+	onClientCannotAnswer?: () => void,
 ): Promise<AtomicExtensionUiResponse> {
-  const cancelled: AtomicExtensionUiResponse = {
-    type: 'extension_ui_response',
-    id: String(ev.id),
-    cancelled: true
-  }
-  if (signal?.aborted) return Promise.resolve(cancelled)
-  return new Promise(resolve => {
-    const finish = (response: AtomicExtensionUiResponse) => {
-      signal?.removeEventListener('abort', abort)
-      resolve(response)
-    }
-    const abort = () => finish(cancelled)
-    signal?.addEventListener('abort', abort, { once: true })
-    // Settle locally and ignore a late reply rather than send ACP's $/cancel_request, which older clients don't know.
-    void requestDialog(conn, sessionId, ev, form, onClientCannotAnswer).then(finish)
-  })
+	const cancelled: AtomicExtensionUiResponse = {
+		type: "extension_ui_response",
+		id: String(ev.id),
+		cancelled: true,
+	};
+	if (signal?.aborted) return Promise.resolve(cancelled);
+	return new Promise((resolve) => {
+		const finish = (response: AtomicExtensionUiResponse) => {
+			signal?.removeEventListener("abort", abort);
+			resolve(response);
+		};
+		const abort = () => finish(cancelled);
+		signal?.addEventListener("abort", abort, { once: true });
+		// Settle locally and ignore a late reply rather than send ACP's $/cancel_request, which older clients don't know.
+		void requestDialog(conn, sessionId, ev, form, onClientCannotAnswer).then(finish);
+	});
 }
 
 async function requestDialog(
-  conn: AgentContext,
-  sessionId: string,
-  ev: AtomicRpcEvent,
-  form: boolean,
-  onClientCannotAnswer?: () => void
+	conn: AgentContext,
+	sessionId: string,
+	ev: AtomicRpcEvent,
+	form: boolean,
+	onClientCannotAnswer?: () => void,
 ): Promise<AtomicExtensionUiResponse> {
-  const id = String(ev.id)
-  const cancelled: AtomicExtensionUiResponse = { type: 'extension_ui_response', id, cancelled: true }
-  const method = ev.method
-  if (method === 'questionnaire') {
-    if (!form) return cancelled
-    try {
-      return await requestQuestionnaire(conn, sessionId, id, ev.questions)
-    } catch {
-      onClientCannotAnswer?.()
-      return cancelled
-    }
-  }
-  const options = Array.isArray(ev.options) ? ev.options.map(String) : []
-  if (method === 'select' && !options.length) return cancelled
-  const title = typeof ev.title === 'string' ? ev.title : `Atomic ${method}`
-  try {
-    if (form) {
-      let property: ElicitationPropertySchema
-      if (method === 'confirm') property = { type: 'boolean', title }
-      else if (method === 'select') property = { type: 'string', title, enum: options }
-      else
-        property = {
-          type: 'string',
-          title,
-          ...(typeof ev.placeholder === 'string' ? { description: ev.placeholder } : {}),
-          ...(typeof ev.prefill === 'string' ? { default: ev.prefill } : {})
-        }
-      const response = await conn.request(methods.client.elicitation.create, {
-        sessionId,
-        mode: 'form',
-        message: typeof ev.message === 'string' ? `${title}\n\n${ev.message}` : title,
-        requestedSchema: { type: 'object', properties: { value: property }, required: ['value'] },
-        _meta: { atomicAcp: { kind: 'extension_ui', method: String(method), atomicRequestId: id } }
-      })
-      if (response.action !== 'accept') return cancelled
-      const value = (response.content as Record<string, unknown> | null | undefined)?.value
-      if (method === 'confirm')
-        return typeof value === 'boolean' ? { type: 'extension_ui_response', id, confirmed: value } : cancelled
-      if (typeof value !== 'string' || (method === 'select' && !options.includes(value))) return cancelled
-      return { type: 'extension_ui_response', id, value }
-    }
-    if (method !== 'select' && method !== 'confirm') return cancelled
-    const rawInput: Record<string, unknown> = { method }
-    for (const key of ['title', 'message', 'options', 'placeholder', 'prefill']) {
-      if (Object.hasOwn(ev, key)) rawInput[key] = ev[key]
-    }
-    const response = await conn.request(methods.client.session.requestPermission, {
-      sessionId,
-      toolCall: { toolCallId: `atomic-ui-${id}`, title, kind: 'other', status: 'pending', rawInput },
-      options:
-        method === 'confirm'
-          ? [
-              { optionId: 'yes', name: 'Yes', kind: 'allow_once' },
-              { optionId: 'no', name: 'No', kind: 'reject_once' }
-            ]
-          : options.map((name, index) => ({ optionId: `choice-${index}`, name, kind: 'allow_once' as const }))
-    })
-    if (response.outcome.outcome !== 'selected') return cancelled
-    const optionId = response.outcome.optionId
-    if (method === 'confirm')
-      return optionId === 'yes' || optionId === 'no'
-        ? { type: 'extension_ui_response', id, confirmed: optionId === 'yes' }
-        : cancelled
-    const index = options.findIndex((_, index) => optionId === `choice-${index}`)
-    return index < 0 ? cancelled : { type: 'extension_ui_response', id, value: options[index]! }
-  } catch {
-    // The client rejected the elicitation or permission request, so nobody can answer it.
-    onClientCannotAnswer?.()
-    return cancelled
-  }
+	const id = String(ev.id);
+	const cancelled: AtomicExtensionUiResponse = { type: "extension_ui_response", id, cancelled: true };
+	const method = ev.method;
+	if (method === "questionnaire") {
+		if (!form) return cancelled;
+		try {
+			return await requestQuestionnaire(conn, sessionId, id, ev.questions);
+		} catch {
+			onClientCannotAnswer?.();
+			return cancelled;
+		}
+	}
+	const options = Array.isArray(ev.options) ? ev.options.map(String) : [];
+	if (method === "select" && !options.length) return cancelled;
+	const title = typeof ev.title === "string" ? ev.title : `Atomic ${method}`;
+	try {
+		if (form) {
+			let property: ElicitationPropertySchema;
+			if (method === "confirm") property = { type: "boolean", title };
+			else if (method === "select") property = { type: "string", title, enum: options };
+			else
+				property = {
+					type: "string",
+					title,
+					...(typeof ev.placeholder === "string" ? { description: ev.placeholder } : {}),
+					...(typeof ev.prefill === "string" ? { default: ev.prefill } : {}),
+				};
+			const response = await conn.request(methods.client.elicitation.create, {
+				sessionId,
+				mode: "form",
+				message: typeof ev.message === "string" ? `${title}\n\n${ev.message}` : title,
+				requestedSchema: { type: "object", properties: { value: property }, required: ["value"] },
+				_meta: { atomicAcp: { kind: "extension_ui", method: String(method), atomicRequestId: id } },
+			});
+			if (response.action !== "accept") return cancelled;
+			const value = (response.content as Record<string, unknown> | null | undefined)?.value;
+			if (method === "confirm")
+				return typeof value === "boolean" ? { type: "extension_ui_response", id, confirmed: value } : cancelled;
+			if (typeof value !== "string" || (method === "select" && !options.includes(value))) return cancelled;
+			return { type: "extension_ui_response", id, value };
+		}
+		if (method !== "select" && method !== "confirm") return cancelled;
+		const rawInput: Record<string, unknown> = { method };
+		for (const key of ["title", "message", "options", "placeholder", "prefill"]) {
+			if (Object.hasOwn(ev, key)) rawInput[key] = ev[key];
+		}
+		const response = await conn.request(methods.client.session.requestPermission, {
+			sessionId,
+			toolCall: { toolCallId: `atomic-ui-${id}`, title, kind: "other", status: "pending", rawInput },
+			options:
+				method === "confirm"
+					? [
+							{ optionId: "yes", name: "Yes", kind: "allow_once" },
+							{ optionId: "no", name: "No", kind: "reject_once" },
+						]
+					: options.map((name, index) => ({ optionId: `choice-${index}`, name, kind: "allow_once" as const })),
+		});
+		if (response.outcome.outcome !== "selected") return cancelled;
+		const optionId = response.outcome.optionId;
+		if (method === "confirm")
+			return optionId === "yes" || optionId === "no"
+				? { type: "extension_ui_response", id, confirmed: optionId === "yes" }
+				: cancelled;
+		const index = options.findIndex((_, index) => optionId === `choice-${index}`);
+		return index < 0 ? cancelled : { type: "extension_ui_response", id, value: options[index]! };
+	} catch {
+		// The client rejected the elicitation or permission request, so nobody can answer it.
+		onClientCannotAnswer?.();
+		return cancelled;
+	}
 }
 
 type Question = {
-  question: string
-  header?: string
-  multiSelect?: boolean
-  options: Array<{ label: string; description?: string }>
-}
+	question: string;
+	header?: string;
+	multiSelect?: boolean;
+	options: Array<{ label: string; description?: string }>;
+};
 
 function readQuestions(value: unknown): Question[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined
-  const questions: Question[] = []
-  for (const item of value) {
-    const q = item as Partial<Question> | null
-    if (!q || typeof q.question !== 'string' || !Array.isArray(q.options) || q.options.length === 0) return undefined
-    const options = q.options.filter(
-      (option): option is Question['options'][number] => typeof option?.label === 'string' && option.label !== ''
-    )
-    if (options.length !== q.options.length) return undefined
-    questions.push({
-      question: q.question,
-      ...(typeof q.header === 'string' ? { header: q.header } : {}),
-      multiSelect: q.multiSelect === true,
-      options
-    })
-  }
-  return questions
+	if (!Array.isArray(value) || value.length === 0) return undefined;
+	const questions: Question[] = [];
+	for (const item of value) {
+		const q = item as Partial<Question> | null;
+		if (!q || typeof q.question !== "string" || !Array.isArray(q.options) || q.options.length === 0) return undefined;
+		const options = q.options.filter(
+			(option): option is Question["options"][number] => typeof option?.label === "string" && option.label !== "",
+		);
+		if (options.length !== q.options.length) return undefined;
+		questions.push({
+			question: q.question,
+			...(typeof q.header === "string" ? { header: q.header } : {}),
+			multiSelect: q.multiSelect === true,
+			options,
+		});
+	}
+	return questions;
 }
 
 /**
@@ -159,45 +159,51 @@ function readQuestions(value: unknown): Question[] | undefined {
  * a multi-select. Each option's description goes in the field's description, since a plain enum carries labels only.
  */
 async function requestQuestionnaire(
-  conn: AgentContext,
-  sessionId: string,
-  id: string,
-  rawQuestions: unknown
+	conn: AgentContext,
+	sessionId: string,
+	id: string,
+	rawQuestions: unknown,
 ): Promise<AtomicExtensionUiResponse> {
-  const cancelled: AtomicExtensionUiResponse = { type: 'extension_ui_response', id, cancelled: true }
-  const questions = readQuestions(rawQuestions)
-  if (!questions) return cancelled
-  const properties: Record<string, ElicitationPropertySchema> = {}
-  questions.forEach((q, index) => {
-    const labels = q.options.map(option => option.label)
-    const described = q.options.filter(option => option.description)
-    const description = [q.question, ...described.map(option => `${option.label}: ${option.description}`)].join('\n')
-    const title = q.header || q.question
-    properties[`q${index}`] = q.multiSelect
-      ? { type: 'array', title, description, minItems: 1, items: { type: 'string', enum: labels } }
-      : { type: 'string', title, description, enum: labels }
-  })
-  const response = await conn.request(methods.client.elicitation.create, {
-    sessionId,
-    mode: 'form',
-    message: questions.length === 1 ? questions[0]!.question : 'Atomic has some questions for you.',
-    requestedSchema: { type: 'object', properties, required: Object.keys(properties) },
-    _meta: { atomicAcp: { kind: 'extension_ui', method: 'questionnaire', atomicRequestId: id } }
-  })
-  if (response.action !== 'accept') return cancelled
-  const content = (response.content ?? {}) as Record<string, unknown>
-  const answers: AtomicQuestionAnswer[] = []
-  for (const [index, q] of questions.entries()) {
-    const labels = q.options.map(option => option.label)
-    const value = content[`q${index}`]
-    if (q.multiSelect) {
-      if (!Array.isArray(value) || value.length === 0 || !value.every(v => typeof v === 'string' && labels.includes(v)))
-        return cancelled
-      answers.push({ questionIndex: index, question: q.question, kind: 'multi', answer: null, selected: value })
-    } else {
-      if (typeof value !== 'string' || !labels.includes(value)) return cancelled
-      answers.push({ questionIndex: index, question: q.question, kind: 'option', answer: value })
-    }
-  }
-  return { type: 'extension_ui_response', id, answers }
+	const cancelled: AtomicExtensionUiResponse = { type: "extension_ui_response", id, cancelled: true };
+	const questions = readQuestions(rawQuestions);
+	if (!questions) return cancelled;
+	const properties: Record<string, ElicitationPropertySchema> = {};
+	questions.forEach((q, index) => {
+		const labels = q.options.map((option) => option.label);
+		const described = q.options.filter((option) => option.description);
+		const description = [q.question, ...described.map((option) => `${option.label}: ${option.description}`)].join(
+			"\n",
+		);
+		const title = q.header || q.question;
+		properties[`q${index}`] = q.multiSelect
+			? { type: "array", title, description, minItems: 1, items: { type: "string", enum: labels } }
+			: { type: "string", title, description, enum: labels };
+	});
+	const response = await conn.request(methods.client.elicitation.create, {
+		sessionId,
+		mode: "form",
+		message: questions.length === 1 ? questions[0]!.question : "Atomic has some questions for you.",
+		requestedSchema: { type: "object", properties, required: Object.keys(properties) },
+		_meta: { atomicAcp: { kind: "extension_ui", method: "questionnaire", atomicRequestId: id } },
+	});
+	if (response.action !== "accept") return cancelled;
+	const content = (response.content ?? {}) as Record<string, unknown>;
+	const answers: AtomicQuestionAnswer[] = [];
+	for (const [index, q] of questions.entries()) {
+		const labels = q.options.map((option) => option.label);
+		const value = content[`q${index}`];
+		if (q.multiSelect) {
+			if (
+				!Array.isArray(value) ||
+				value.length === 0 ||
+				!value.every((v) => typeof v === "string" && labels.includes(v))
+			)
+				return cancelled;
+			answers.push({ questionIndex: index, question: q.question, kind: "multi", answer: null, selected: value });
+		} else {
+			if (typeof value !== "string" || !labels.includes(value)) return cancelled;
+			answers.push({ questionIndex: index, question: q.question, kind: "option", answer: value });
+		}
+	}
+	return { type: "extension_ui_response", id, answers };
 }
