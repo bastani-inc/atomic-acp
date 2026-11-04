@@ -17,7 +17,7 @@ child.stdout.setEncoding('utf8')
 child.stdout.on('data', chunk => process.stdout.write(chunk))
 
 function send(obj) {
-  child.stdin.write(JSON.stringify(obj) + '\n')
+  child.stdin.write(`${JSON.stringify(obj)}\n`)
 }
 
 let sessionId = null

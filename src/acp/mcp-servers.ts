@@ -29,6 +29,7 @@ function assertUsable(server: McpServer): void {
     throw RequestError.invalidParams(undefined, `MCP server ${JSON.stringify(server.name)} refused: ${reason}`)
   }
   if ('type' in server && server.type === 'http') {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the refusal names the ${...} syntax it rejects
     if (URL_ENV_REFERENCE.test(server.url)) refuse('its URL contains an environment reference (${...} or $env:)')
     for (const { name, value } of server.headers ?? []) {
       if (!HEADER_NAME.test(name)) refuse(`header name ${JSON.stringify(name)} is not a valid HTTP header name`)

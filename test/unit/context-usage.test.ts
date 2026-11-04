@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AtomicAcpSession } from '../../src/acp/session.js'
-import { AtomicRpcProcess, SESSION_STATS_TIMEOUT_MS, type AtomicSessionStats } from '../../src/atomic-rpc/process.js'
+import { type AtomicRpcProcess, SESSION_STATS_TIMEOUT_MS, type AtomicSessionStats } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
 function fixture(stats: AtomicSessionStats) {

@@ -31,12 +31,13 @@ Use `@agentclientprotocol/sdk`:
 
 ## Dev workflow
 
-- Install deps: `npm install`
+- Install deps: `npm install`. When `package.json` dependencies change, regenerate `package-lock.json` with Node 22's npm (`npx npm@10 install`), the npm CI and Atomic install with; npm 11 omits optional peer packages that npm 10's `npm ci` requires.
 - Run in dev: `npm run dev`
 - Build: `npm run build`
 - Smoke test (stdio): `npm run smoke`
 - Real Atomic smoke test (build first; requires provider credentials): `npm run smoke:e2e:atomic`
-- Lint: `npm run lint`
+- Typecheck: `npm run typecheck` (TypeScript 7, as Atomic uses)
+- Lint and format check: `npm run lint` (Biome with Atomic's configuration; `npm run format` writes the formatting)
 - Test: `npm run test`
 
 ## Manual testing notes

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AtomicAcpSession } from '../../src/acp/session.js'
-import { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
+import type { AtomicRpcProcess } from '../../src/atomic-rpc/process.js'
 import { FakeAgentSideConnection, FakeAtomicRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
 test('AtomicAcpSession keeps the prompt and its queue open across retries until settlement', async () => {

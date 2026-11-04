@@ -35,7 +35,7 @@ function spawnAgent() {
   return {
     proc,
     send(obj) {
-      proc.stdin.write(JSON.stringify(obj) + '\n')
+      proc.stdin.write(`${JSON.stringify(obj)}\n`)
     },
     onMessage(cb) {
       listeners.push(cb)

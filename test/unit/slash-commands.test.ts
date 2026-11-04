@@ -25,10 +25,12 @@ test('substituteArgs: replaces Atomic prompt-template arguments', () => {
   )
   assert.equal(substituteArgs('$3', ['one']).trim(), '')
   assert.equal(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
     substituteArgs('tail=${@:2} pair=${@:1:2}', ['one', 'two', 'three']).trim(),
     'tail=two three pair=one two'
   )
   assert.equal(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal environment or argument reference the code must not expand
     substituteArgs('zero=${@:0} zeroPair=${@:0:2}', ['one', 'two', 'three']).trim(),
     'zero=one two three zeroPair=one two'
   )

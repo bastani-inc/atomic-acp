@@ -55,7 +55,7 @@ function runCli(
 async function initializeOverStdio(args: string[]): Promise<{ result: RunResult; response: any }> {
   let response: any
   const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1 } }
-  const resultPromise = runCli(args, JSON.stringify(initialize) + '\n', (stdout, stdin) => {
+  const resultPromise = runCli(args, `${JSON.stringify(initialize)}\n`, (stdout, stdin) => {
     const line = stdout.split('\n').find(l => l.includes('"id":1'))
     if (!line || response) return
     response = JSON.parse(line)

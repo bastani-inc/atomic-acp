@@ -61,7 +61,7 @@ import {
   type ClientElicitationSupport
 } from './elicitation/extension-dialog.js'
 import { isAbsolute } from 'node:path'
-import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, readdirSync, type Stats, statSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -432,7 +432,7 @@ export class AtomicAcpAgent {
     // the "New version available" notice (if any) since it's high-signal and actionable.
     const preludeText = quietStartup
       ? updateNotice
-        ? updateNotice + '\n'
+        ? `${updateNotice}\n`
         : ''
       : buildStartupInfo({
           cwd: params.cwd,
@@ -805,7 +805,7 @@ export class AtomicAcpAgent {
 
         // Keep it reasonably sized in chat.
         const maxChars = 20_000
-        if (text.length > maxChars) text = text.slice(0, maxChars) + '\n\n...(truncated)...'
+        if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n\n...(truncated)...`
 
         await this.conn.notify(methods.client.session.update, {
           sessionId: session.sessionId,
@@ -1554,7 +1554,7 @@ function buildStartupInfo(opts: {
           // Skip obvious noise
           if (name === 'node_modules' || name === '.git') continue
           const p = join(dir, name)
-          let st
+          let st: Stats
           try {
             st = statSync(p)
           } catch {
@@ -1632,7 +1632,7 @@ function buildStartupInfo(opts: {
   }
 
   // Do NOT include themes (per request).
-  return md.join('\n').trim() + '\n'
+  return `${md.join('\n').trim()}\n`
 }
 
 export function readNearestPackageJson(metaUrl: string): {
