@@ -57,7 +57,7 @@
     "@bastani/atomic": "0.9.71-alpha.1",
     "@eslint/js": "^10.0.1",
     "@types/cross-spawn": "^6.0.6",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.6",
     "eslint": "^10.13.0",
     "globals": "^17.13.0",
     "prettier": "^3.9.10",
