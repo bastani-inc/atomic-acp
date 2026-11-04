@@ -1,53 +1,56 @@
-import { spawn } from 'node:child_process'
+import { spawn } from "node:child_process";
+import { afterInitialize } from "./acp-handshake.mjs";
 
-const p = spawn('node', ['dist/index.js'], { stdio: ['pipe', 'pipe', 'inherit'] })
+const p = spawn("node", ["dist/index.js"], { stdio: ["pipe", "pipe", "inherit"] });
 
-let buf = ''
-let sid = null
-let gotIntro = false
+let buf = "";
+let sid = null;
+let gotIntro = false;
 
-p.stdout.on('data', d => {
-  buf += d.toString('utf8')
-  for (let idx = buf.indexOf('\n'); idx >= 0; idx = buf.indexOf('\n')) {
-    const line = buf.slice(0, idx)
-    buf = buf.slice(idx + 1)
-    if (!line.trim()) continue
-    const msg = JSON.parse(line)
+p.stdout.on("data", (d) => {
+	buf += d.toString("utf8");
+	for (let idx = buf.indexOf("\n"); idx >= 0; idx = buf.indexOf("\n")) {
+		const line = buf.slice(0, idx);
+		buf = buf.slice(idx + 1);
+		if (!line.trim()) continue;
+		const msg = JSON.parse(line);
 
-    if (msg.id === 2) {
-      sid = msg.result?.sessionId
-      console.log(
-        'session/new response _meta.atomicAcp.startupInfo present:',
-        Boolean(msg.result?._meta?.atomicAcp?.startupInfo)
-      )
-    }
+		if (msg.id === 2) {
+			sid = msg.result?.sessionId;
+			console.log(
+				"session/new response _meta.atomicAcp.startupInfo present:",
+				Boolean(msg.result?._meta?.atomicAcp?.startupInfo),
+			);
+		}
 
-    if (msg.method === 'session/update') {
-      const up = msg.params?.update
-      if (up?.sessionUpdate === 'agent_message_chunk' && up?.content?.type === 'text') {
-        const t = String(up.content.text)
-        if (t.includes('[Context]') && t.includes('[Skills]') && t.includes('[Extensions]')) {
-          gotIntro = true
-          console.log('OK: got intro via session/update (before any prompt)')
-          p.kill('SIGTERM')
-          process.exit(0)
-        }
-      }
-    }
-  }
-})
+		if (msg.method === "session/update") {
+			const up = msg.params?.update;
+			if (up?.sessionUpdate === "agent_message_chunk" && up?.content?.type === "text") {
+				const t = String(up.content.text);
+				if (t.includes("[Context]") && t.includes("[Skills]") && t.includes("[Extensions]")) {
+					gotIntro = true;
+					console.log("OK: got intro via session/update (before any prompt)");
+					p.kill("SIGTERM");
+					process.exit(0);
+				}
+			}
+		}
+	}
+});
 
 function send(obj) {
-  p.stdin.write(`${JSON.stringify(obj)}\n`)
+	p.stdin.write(`${JSON.stringify(obj)}\n`);
 }
 
-send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1 } })
-send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: process.cwd(), mcpServers: [] } })
+send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } });
+afterInitialize(p.stdout, () => {
+	send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: process.cwd(), mcpServers: [] } });
+});
 
 setTimeout(() => {
-  if (!gotIntro) {
-    console.error('Did not receive intro before prompt. sessionId=', sid)
-    p.kill('SIGTERM')
-    process.exit(1)
-  }
-}, 1500)
+	if (!gotIntro) {
+		console.error("Did not receive intro before prompt. sessionId=", sid);
+		p.kill("SIGTERM");
+		process.exit(1);
+	}
+}, 1500);
