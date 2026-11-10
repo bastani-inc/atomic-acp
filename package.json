@@ -55,7 +55,7 @@
   },
   "devDependencies": {
     "@bastani/atomic": "0.9.76",
-    "@biomejs/biome": "2.5.8",
+    "@biomejs/biome": "2.6.6",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.12.4",
     "tsup": "^9.0.0",
