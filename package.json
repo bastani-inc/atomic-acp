@@ -54,7 +54,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@bastani/atomic": "0.9.74",
+    "@bastani/atomic": "0.9.75",
     "@biomejs/biome": "2.5.8",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.12.4",
