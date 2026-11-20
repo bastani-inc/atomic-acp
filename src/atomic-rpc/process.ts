@@ -74,9 +74,7 @@ type AtomicRpcCommand =
 	// Messages
 	| { type: "get_messages"; id?: string }
 	// Commands
-	| { type: "get_commands"; id?: string }
-	| { type: "list_workflow_runs"; id?: string; status?: string }
-	| { type: "get_workflow_run_summary"; id?: string; runId: string };
+	| { type: "get_commands"; id?: string };
 
 type AtomicRpcResponse = {
 	type: "response";
@@ -139,8 +137,8 @@ type SpawnParams = {
 	 */
 	mcpServers?: Record<string, AdapterMcpServer>;
 	/**
-	 * No person can answer questions: the session leaves `ask_user_question` out, and a workflow stage's
-	 * call returns a clear "no person available" result.
+	 * No person can answer questions: the session leaves `ask_user_question` out, and a call that still
+	 * reaches it returns a clear "no person available" result.
 	 */
 	headless?: boolean;
 	/**
@@ -217,7 +215,7 @@ export class AtomicRpcProcess {
 		// Speed/robustness for ACP:
 		// - themes are irrelevant in rpc mode and can be noisy/slow to load.
 		// Keep extensions + prompt templates enabled because ACP users may rely on them
-		// (e.g. MCP extensions, prompt templates for workflows).
+		// (e.g. MCP extensions, prompt templates).
 		let extraArgs: string[];
 		try {
 			extraArgs = params.extraArgs ?? parseAtomicExtraArgs(process.argv, process.env);
@@ -232,7 +230,7 @@ export class AtomicRpcProcess {
 		});
 		if (adapterExtension) args.push("-e", adapterExtension.path);
 		// Headless, the session never offers ask_user_question. The extension's block still answers
-		// a call from a workflow stage, whose sessions don't inherit the exclusion.
+		// a call from a session that doesn't inherit the exclusion.
 		args.push(...(params.headless ? withExcludedTool(extraArgs, "ask_user_question") : extraArgs));
 
 		const start = shouldUseShellForAtomicCommand(cmd) ? crossSpawn : spawn;
@@ -524,19 +522,6 @@ export class AtomicRpcProcess {
 				reject(e);
 			}
 		});
-	}
-
-	async listWorkflowRuns(status?: string): Promise<unknown> {
-		const res = await this.request({ type: "list_workflow_runs", ...(status ? { status } : {}) });
-		if (!res.success) throw new Error(`Atomic list_workflow_runs failed: ${res.error ?? JSON.stringify(res.data)}`);
-		return res.data;
-	}
-
-	async getWorkflowRunSummary(runId: string): Promise<unknown> {
-		const res = await this.request({ type: "get_workflow_run_summary", runId });
-		if (!res.success)
-			throw new Error(`Atomic get_workflow_run_summary failed: ${res.error ?? JSON.stringify(res.data)}`);
-		return res.data;
 	}
 
 	private request(cmd: AtomicRpcCommand, opts?: { timeoutMs?: number }): Promise<AtomicRpcResponse> {

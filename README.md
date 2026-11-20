@@ -9,8 +9,6 @@
   &nbsp;·&nbsp;
   <a href="#what-works">What works</a>
   &nbsp;·&nbsp;
-  <a href="#workflows">Workflows</a>
-  &nbsp;·&nbsp;
   <a href="#configuration">Configuration</a>
   &nbsp;·&nbsp;
   <a href="https://docs.bastani.ai/">Atomic docs</a>
@@ -71,29 +69,11 @@ Without a global install, use `"command": "npx", "args": ["-y", "@bastani/atomic
 - Text and reasoning stream into the thread. Tool calls show their status and files, edits show a diff, and shell commands show their output.
 - Threads are Atomic sessions. They appear in the editor's history and in `atomic --resume`, keep their title and survive an adapter restart. Deleting a thread deletes its session.
 - The model and thinking pickers list what your Atomic setup offers, and the context indicator shows how full the context is.
-- Prompt templates, skills (`/skill:name`) and extension commands such as `/workflow` appear in the slash menu.
+- Prompt templates, skills (`/skill:name`) and extension commands appear in the slash menu.
 - When Atomic asks you to pick, confirm or type something, the editor shows a form.
 - `ask_user_question` shows all of its questions in one form, multi-select included.
 - MCP servers the editor configures reach the thread's Atomic process, and their tools are callable as `mcp__<server>__<tool>`. Stdio and HTTP servers work, SSE servers are skipped. `atomic-acp` never writes to your Atomic MCP config, and a server you define there under the same name wins.
 - If Atomic exits during a message, the message fails with the reason, and the next message starts Atomic again on the same session.
-
-## Workflows
-
-Atomic workflows run from the editor as they do in the terminal:
-
-```text
-/workflow list
-/workflow ralph prompt="Add rate limiting to the API"
-/workflow status
-```
-
-A message that starts a workflow stays open until every run it started ends, so the editor doesn't report the agent as done while work is still going. Each run appears as a tool call with its stages and result.
-
-- Cancelling the message quits its runs. Resume one with `/workflow resume <runId>`.
-- A run that waits for your input stops holding the message. Reply in the thread and the agent answers the prompt.
-- Set `ATOMIC_ACP_WAIT_FOR_WORKFLOWS=0` to end the message as soon as a run starts.
-
-`/workflow-runs [status]` lists the project's recent runs, and `/workflow-run <runId>` shows one run's saved summary.
 
 ## Slash commands
 
@@ -119,7 +99,6 @@ Set these in the `env` of your agent server entry:
 | ------------------------------------ | -------- | --------------------------------------------------------------- |
 | `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` | Path or name of the Atomic executable                           |
 | `ATOMIC_ACP_ATOMIC_ARGS`             | unset    | JSON array of extra arguments for every Atomic process          |
-| `ATOMIC_ACP_WAIT_FOR_WORKFLOWS`      | `1`      | `0` ends a message without waiting for the runs it started      |
 | `ATOMIC_ACP_HEADLESS`                | unset    | `1` when no person can answer questions (see below)             |
 | `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset    | `true` lets the editor attach file contents directly to prompts |
 
@@ -129,7 +108,7 @@ Everything else, including logins, models, skills, extensions and the session st
 
 ### Headless clients
 
-With `ATOMIC_ACP_HEADLESS=1`, questions end at once instead of waiting. `ask_user_question` tells the model that no person is available, extension dialogs are cancelled, and a workflow that stops for input is quit. It stays resumable.
+With `ATOMIC_ACP_HEADLESS=1`, questions end at once instead of waiting. `ask_user_question` tells the model that no person is available, and extension dialogs are cancelled.
 
 ## Limitations
 
