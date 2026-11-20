@@ -190,3 +190,21 @@ test("Atomic exiting during a cancel ends the cancelled prompt and fails the one
 	assert.equal(await first, "cancelled");
 	await assert.rejects(second, /Atomic exited/);
 });
+
+test("closing a session ends its prompts as cancelled and sends nothing more for it", async () => {
+	const { conn, proc, session } = setup();
+	const first = session.prompt("one");
+	const second = session.prompt("two");
+	proc.emit({ type: "agent_start" });
+	await tick();
+	session.close();
+	assert.equal(await first, "cancelled");
+	assert.equal(await second, "cancelled");
+	const sent = conn.updates.length;
+	proc.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "late" } });
+	proc.emit({ type: "tool_execution_start", toolCallId: "t", toolName: "read", args: {} });
+	proc.exit(new Error("killed"));
+	await tick();
+	assert.equal(conn.updates.length, sent);
+	assert.equal(proc.prompts.length, 1);
+});
