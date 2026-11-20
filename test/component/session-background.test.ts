@@ -18,22 +18,22 @@ function setup() {
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-test("workflow command output, status and widget stream without an active prompt", async () => {
+test("extension command output, status and widget stream without an active prompt", async () => {
 	const { conn, proc } = setup();
 	proc.emit({
 		type: "message_end",
 		message: {
 			role: "custom",
-			customType: "workflows:command-output",
-			content: "Available workflows: smoke",
+			customType: "review:command-output",
+			content: "Available reviews: smoke",
 			display: true,
 		},
 	});
-	proc.emit({ type: "extension_ui_request", method: "setStatus", statusKey: "workflow", statusText: "Running smoke" });
+	proc.emit({ type: "extension_ui_request", method: "setStatus", statusKey: "review", statusText: "Running smoke" });
 	proc.emit({
 		type: "extension_ui_request",
 		method: "setWidget",
-		widgetKey: "workflow.run",
+		widgetKey: "review.run",
 		widgetLines: ["smoke completed"],
 	});
 	await tick();
@@ -45,25 +45,25 @@ test("workflow command output, status and widget stream without an active prompt
 	assert.deepEqual(
 		conn.updates.map((u) => (u.update.sessionUpdate === "agent_message_chunk" ? u.update.content : null)),
 		[
-			{ type: "text", text: "Available workflows: smoke" },
+			{ type: "text", text: "Available reviews: smoke" },
 			{ type: "text", text: "Running smoke" },
 			{ type: "text", text: "smoke completed" },
 		],
 	);
 });
 
-test("handled workflow commands pass through and finish after output without agent_end", async () => {
+test("handled extension commands pass through and finish after output without agent_end", async () => {
 	const { conn, proc, session } = setup();
 	proc.promptDisposition = "handled";
-	const result = session.prompt("/workflow list");
-	proc.emit({ type: "message_end", message: { role: "custom", display: true, content: "Available workflows" } });
+	const result = session.prompt("/review list");
+	proc.emit({ type: "message_end", message: { role: "custom", display: true, content: "Available reviews" } });
 	assert.equal(await result, "end_turn");
-	assert.equal(proc.prompts[0]?.message, "/workflow list");
+	assert.equal(proc.prompts[0]?.message, "/review list");
 	assert.ok(conn.updates.some((u) => u.update.sessionUpdate === "agent_message_chunk"));
 	proc.emit({ type: "agent_start" });
 	proc.emit({
 		type: "message_update",
-		assistantMessageEvent: { type: "text_delta", delta: "Background workflow finished" },
+		assistantMessageEvent: { type: "text_delta", delta: "Background review finished" },
 	});
 	proc.emit({ type: "agent_end" });
 	await tick();
@@ -72,55 +72,15 @@ test("handled workflow commands pass through and finish after output without age
 			(u) =>
 				u.update.sessionUpdate === "agent_message_chunk" &&
 				u.update.content.type === "text" &&
-				u.update.content.text === "Background workflow finished",
+				u.update.content.text === "Background review finished",
 		),
 	);
-});
-
-test("workflow tool reports action and identity through execution and results", async () => {
-	const { conn, proc } = setup();
-	proc.emit({
-		type: "tool_execution_start",
-		toolCallId: "launch",
-		toolName: "workflow",
-		args: { workflow: "review" },
-	});
-	await tick();
-	const launch = conn.updates.shift()?.update;
-	assert.equal(launch?.sessionUpdate, "tool_call");
-	if (launch?.sessionUpdate === "tool_call") assert.equal(launch.title, "workflow: run review");
-	proc.emit({
-		type: "message_update",
-		assistantMessageEvent: { type: "toolcall_start", toolCall: { id: "w", name: "workflow", arguments: {} } },
-	});
-	proc.emit({
-		type: "tool_execution_start",
-		toolCallId: "w",
-		toolName: "workflow",
-		args: { action: "status", runId: "run-1" },
-	});
-	proc.emit({
-		type: "tool_execution_end",
-		toolCallId: "w",
-		result: { content: [{ type: "text", text: "Completed review" }] },
-	});
-	await tick();
-	const update = conn.updates[1]?.update;
-	assert.equal(update?.sessionUpdate, "tool_call_update");
-	if (update?.sessionUpdate === "tool_call_update") {
-		assert.equal(update.title, "workflow: status run-1");
-		assert.equal(update.kind, "other");
-	}
-	const end = conn.updates[2]?.update;
-	assert.equal(end?.sessionUpdate, "tool_call_update");
-	if (end?.sessionUpdate === "tool_call_update")
-		assert.deepEqual(end.content, [{ type: "content", content: { type: "text", text: "Completed review" } }]);
 });
 
 test("a prompt submitted during background work waits for its own settlement", async () => {
 	const { proc, session } = setup();
 	proc.promptDisposition = "handled";
-	assert.equal(await session.prompt("/workflow run review"), "end_turn");
+	assert.equal(await session.prompt("/review run"), "end_turn");
 	proc.emit({ type: "agent_start" });
 	proc.promptDisposition = "queued";
 	let finished = false;

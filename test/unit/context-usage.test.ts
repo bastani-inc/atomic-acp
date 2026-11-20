@@ -52,10 +52,10 @@ test("context usage reports window occupancy, not cumulative token totals, befor
 	assert.deepEqual(timeouts, [SESSION_STATS_TIMEOUT_MS]);
 });
 
-test("handled workflow commands publish context usage before completing without settlement", async () => {
+test("handled extension commands publish context usage before completing without settlement", async () => {
 	const { session, proc, conn } = fixture({ contextUsage: { tokens: 42, contextWindow: 200000 } });
 	proc.promptDisposition = "handled";
-	assert.equal(await session.prompt("/workflow list"), "end_turn");
+	assert.equal(await session.prompt("/review"), "end_turn");
 	assert.ok(
 		conn.updates.some(
 			({ update }) => update.sessionUpdate === "usage_update" && update.used === 42 && update.size === 200000,
