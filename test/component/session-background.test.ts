@@ -133,3 +133,38 @@ test("a follow-up starting before background settlement completes at the shared 
 	proc.emit({ type: "agent_settled" });
 	assert.equal(await result, "end_turn");
 });
+
+test("a prompt that joins a background run ends when that run settles", async () => {
+	const { proc, session } = setup();
+	// A subagent's completion notice starts a run with no prompt open.
+	proc.emit({ type: "agent_start" });
+	proc.promptDisposition = "queued";
+	const result = session.prompt("What did it find?");
+	await tick();
+	// Atomic's agent loop takes the queued prompt into the same run, without another agent_start.
+	proc.emit({ type: "message_start", message: { role: "user", content: "What did it find?" } });
+	proc.emit({ type: "agent_end" });
+	proc.emit({ type: "agent_settled" });
+	assert.equal(await result, "end_turn");
+});
+
+test("a notice that enters a background run does not take over a queued prompt", async () => {
+	const { proc, session } = setup();
+	proc.emit({ type: "agent_start" });
+	proc.promptDisposition = "queued";
+	let finished = false;
+	const result = session.prompt("Next step").then((reason) => {
+		finished = true;
+		return reason;
+	});
+	await tick();
+	proc.emit({ type: "message_start", message: { role: "custom", customType: "subagent-notify", content: "done" } });
+	proc.emit({ type: "agent_end" });
+	proc.emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(finished, false);
+	proc.emit({ type: "agent_start" });
+	proc.emit({ type: "agent_end" });
+	proc.emit({ type: "agent_settled" });
+	assert.equal(await result, "end_turn");
+});
