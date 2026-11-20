@@ -745,6 +745,13 @@ export class AtomicAcpSession {
 				}
 				break;
 			}
+			case "message_start": {
+				// A prompt sent while a background run streams (one a subagent's completion notice started)
+				// joins that run as a queued user message: the run's agent_settled now ends the prompt.
+				const role = (ev.message as { role?: unknown } | undefined)?.role;
+				if (role === "user" && this.backgroundTurn && this.pendingTurn) this.backgroundTurn = false;
+				break;
+			}
 			case "message_end": {
 				const message = ev.message as { role?: string; display?: boolean; content?: unknown } | undefined;
 				if (message?.role === "custom" && message.display === true) {
