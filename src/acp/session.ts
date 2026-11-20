@@ -143,6 +143,7 @@ export class SessionManager {
 		const s = this.sessions.get(sessionId);
 		if (!s) return Promise.resolve();
 		this.sessions.delete(sessionId);
+		s.close();
 		try {
 			return Promise.resolve(s.proc.dispose?.()).catch(() => {});
 		} catch {
@@ -280,6 +281,10 @@ export class AtomicAcpSession {
 
 	// The turn whose settlement is under way, so a cancel does not settle it a second time.
 	private settlingTurn: PendingTurn | null = null;
+
+	// Set once the adapter closed this session: nothing more is sent for it.
+	private closed = false;
+	private readonly detach: Array<() => void> = [];
 	constructor(opts: {
 		sessionId: string;
 		cwd: string;
@@ -302,8 +307,9 @@ export class AtomicAcpSession {
 		this.fileCommands = opts.fileCommands ?? [];
 
 		this.initialTitlePending = opts.autoTitle ?? false;
-		this.proc.onEvent((ev) => this.handleAtomicEvent(ev));
-		this.proc.onExit?.((err) => this.handleAtomicExit(err));
+		this.detach.push(this.proc.onEvent((ev) => this.handleAtomicEvent(ev)));
+		const offExit = this.proc.onExit?.((err) => this.handleAtomicExit(err));
+		if (offExit) this.detach.push(offExit);
 	}
 
 	setStartupInfo(text: string) {
@@ -415,6 +421,20 @@ export class AtomicAcpSession {
 		if (this.pendingTurn === target && this.settlingTurn !== target && !this.inAgentLoop) await this.settleTurn();
 	}
 
+	/**
+	 * The adapter stopped this session's Atomic (a reload, another session, a delete): its prompts end as
+	 * cancelled now, and nothing more is sent for it, since a session loaded again keeps the same id.
+	 */
+	close(): void {
+		if (this.closed) return;
+		this.closed = true;
+		for (const off of this.detach.splice(0)) off();
+		const turns = [this.pendingTurn, ...this.turnQueue.splice(0)];
+		this.pendingTurn = null;
+		for (const turn of turns) turn?.resolve("cancelled");
+		void this.cancelPendingExtensionDialogs();
+	}
+
 	async setSessionName(name: string): Promise<void> {
 		return this.enqueueTitleUpdate(async () => {
 			await this.proc.setSessionName(name);
@@ -460,6 +480,7 @@ export class AtomicAcpSession {
 	}
 
 	private emit(update: SessionUpdate): void {
+		if (this.closed) return;
 		// Serialize update delivery.
 		this.lastEmit = this.lastEmit
 			.then(() =>
