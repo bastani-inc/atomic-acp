@@ -9,6 +9,8 @@
   &nbsp;·&nbsp;
   <a href="#what-works">What works</a>
   &nbsp;·&nbsp;
+  <a href="#subagents-and-background-work">Subagents</a>
+  &nbsp;·&nbsp;
   <a href="#configuration">Configuration</a>
   &nbsp;·&nbsp;
   <a href="https://docs.bastani.ai/">Atomic docs</a>
@@ -74,6 +76,15 @@ Without a global install, use `"command": "npx", "args": ["-y", "@bastani/atomic
 - `ask_user_question` shows all of its questions in one form, multi-select included.
 - MCP servers the editor configures reach the thread's Atomic process, and their tools are callable as `mcp__<server>__<tool>`. Stdio and HTTP servers work, SSE servers are skipped. `atomic-acp` never writes to your Atomic MCP config, and a server you define there under the same name wins.
 - If Atomic exits during a message, the message fails with the reason, and the next message starts Atomic again on the same session.
+
+## Subagents and background work
+
+Atomic 0.10 has no workflows. The agent splits work across [subagents](https://docs.bastani.ai/orchestration) and background shells instead, and the editor shows them as tool calls.
+
+- A message ends when Atomic finishes its turn, even if subagents or shells it started are still running. Atomic doesn't report background work over RPC, so `atomic-acp` can't wait for it. To keep a message open until a result is in, ask the agent to wait for it.
+- When background work finishes, Atomic reads the result in a new turn. That turn streams into the thread without a message of yours. A message you send while it runs joins that turn and ends when it ends.
+- Cancelling a message stops the current turn and drops the messages queued behind it, as Esc does in Atomic. Subagents and shells keep running; ask the agent to stop them.
+- Opening another thread, deleting a thread, or opening it again with different MCP servers stops its Atomic process. A message still running there ends as cancelled, and its subagents stop with the process.
 
 ## Slash commands
 
