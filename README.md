@@ -36,7 +36,7 @@ Atomic reads files, edits code and runs commands on your machine, exactly as it 
 
 ## Get started
 
-You need Node.js 20 or newer and Atomic 0.9.39 or newer, signed in to at least one model provider:
+You need Node.js 20 or newer and Atomic 0.10.0 or newer, signed in to at least one model provider:
 
 ```bash
 npm install -g @bastani/atomic @bastani/atomic-acp
@@ -123,7 +123,7 @@ With `ATOMIC_ACP_HEADLESS=1`, questions end at once instead of waiting. `ask_use
 
 ## Limitations
 
-- `ask_user_question` needs Atomic 0.9.50 or newer and an editor that supports ACP forms (elicitation). Without them, the question can't be answered.
+- `ask_user_question` needs an editor that supports ACP forms (elicitation). Without them, the question can't be answered.
 - Atomic reads, writes and runs commands itself. The editor's file and terminal APIs aren't used.
 - Messages sent while Atomic is busy are queued and sent one at a time.
 - Zed is the tested client. Other ACP clients should work but may render some updates differently.
