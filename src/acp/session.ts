@@ -61,6 +61,8 @@ function atomicExitReason(err: Error): string {
 type PendingTurn = {
 	resolve: (reason: StopReason) => void;
 	reject: (err: unknown) => void;
+	/** Settles once Atomic answered the prompt request, so Atomic has started, queued or handled it. */
+	accepted: Promise<unknown>;
 };
 
 type QueuedTurn = {
@@ -275,6 +277,9 @@ export class AtomicAcpSession {
 	private atomicExit: Error | null = null;
 
 	private pendingExtensionDialogs = new Map<string, () => Promise<void>>();
+
+	// The turn whose settlement is under way, so a cancel does not settle it a second time.
+	private settlingTurn: PendingTurn | null = null;
 	constructor(opts: {
 		sessionId: string;
 		cwd: string;
@@ -371,8 +376,11 @@ export class AtomicAcpSession {
 		return turnPromise;
 	}
 
+	/**
+	 * Cancel the running prompt and the queued ones. Like Esc in Atomic, this stops the session's current
+	 * run only: subagents and background shells it launched keep running.
+	 */
 	async cancel(): Promise<void> {
-		// Cancel current and clear any queued prompts.
 		this.cancelRequested = true;
 
 		if (this.turnQueue.length) {
@@ -391,8 +399,20 @@ export class AtomicAcpSession {
 
 		await this.cancelPendingExtensionDialogs();
 
-		// Abort the currently running turn (if any). If nothing is running, this is a no-op.
+		const target = this.pendingTurn;
+		if (!target) {
+			await this.proc.abort();
+			return;
+		}
+		// Atomic queues a prompt sent while another run streams. Once it has, clear_queue takes it back,
+		// so the hold abort puts on queued messages can't deliver it with a later prompt.
+		await target.accepted;
+		if (this.pendingTurn !== target) return;
+		await this.proc.clearQueue().catch(() => {});
+		// abort answers once Atomic is idle, after the run's agent_settled.
 		await this.proc.abort();
+		// A prompt that never started a run of its own has no agent_settled to end it.
+		if (this.pendingTurn === target && this.settlingTurn !== target && !this.inAgentLoop) await this.settleTurn();
 	}
 
 	async setSessionName(name: string): Promise<void> {
@@ -514,7 +534,14 @@ export class AtomicAcpSession {
 	private startTurn(t: QueuedTurn): void {
 		this.cancelRequested = false;
 
-		const pending: PendingTurn = { resolve: t.resolve, reject: t.reject };
+		let accept!: () => void;
+		const pending: PendingTurn = {
+			resolve: t.resolve,
+			reject: t.reject,
+			accepted: new Promise<void>((resolve) => {
+				accept = resolve;
+			}),
+		};
 		this.pendingTurn = pending;
 		void this.maybeAutoTitle(t.title);
 
@@ -529,6 +556,7 @@ export class AtomicAcpSession {
 		this.proc
 			.prompt(t.message, t.images, "followUp")
 			.then(async (disposition) => {
+				accept();
 				if (disposition !== "handled" || this.pendingTurn !== pending) return;
 				if (this.inAgentLoop) this.backgroundTurn = true;
 				await this.publishContextUsage();
@@ -545,6 +573,7 @@ export class AtomicAcpSession {
 				}
 			})
 			.catch((err) => {
+				accept();
 				void this.finishActiveAndQueuedFromFailure(err);
 			});
 	}
@@ -556,15 +585,12 @@ export class AtomicAcpSession {
 		if (!this.pendingTurn && this.turnQueue.length === 0) return;
 
 		// A failed prompt is never a successful turn: it ends with a JSON-RPC error unless cancelled.
-		const failure = maybeAuthRequiredError(err) ?? (this.cancelRequested ? null : this.promptFailure(err));
+		// A cancel ends the queue at once, so a prompt still queued here came after it and fails too.
+		const failure = maybeAuthRequiredError(err) ?? this.promptFailure(err);
 		const queued = this.turnQueue.splice(0);
-		if (failure) {
-			this.pendingTurn?.reject(failure);
-			for (const queuedTurn of queued) queuedTurn.reject(failure);
-		} else {
-			this.pendingTurn?.resolve("cancelled");
-			for (const queuedTurn of queued) queuedTurn.resolve("cancelled");
-		}
+		if (this.cancelRequested && !maybeAuthRequiredError(err)) this.pendingTurn?.resolve("cancelled");
+		else this.pendingTurn?.reject(failure);
+		for (const queuedTurn of queued) queuedTurn.reject(failure);
 
 		this.pendingTurn = null;
 		this.inAgentLoop = false;
@@ -698,6 +724,7 @@ export class AtomicAcpSession {
 	}
 
 	private async settleTurn(): Promise<void> {
+		this.settlingTurn = this.pendingTurn;
 		await this.cancelPendingExtensionDialogs();
 
 		// Ensure all updates derived from Atomic events are delivered before we resolve
@@ -707,6 +734,7 @@ export class AtomicAcpSession {
 		const reason: StopReason = this.cancelRequested ? "cancelled" : "end_turn";
 		this.pendingTurn?.resolve(reason);
 		this.pendingTurn = null;
+		this.settlingTurn = null;
 		this.inAgentLoop = false;
 
 		// Start next queued prompt, if any.

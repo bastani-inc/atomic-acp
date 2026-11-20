@@ -63,6 +63,8 @@ export class FakeAtomicRpcProcess {
 	promptPromise: Promise<void> | null = null;
 	promptDisposition: "started" | "queued" | "handled" | undefined;
 	abortCount = 0;
+	/** The order of control requests: `clear_queue` and `abort`. */
+	readonly calls: string[] = [];
 
 	onEvent(handler: (ev: AtomicRpcEvent) => void): () => void {
 		this.handlers.push(handler);
@@ -96,8 +98,20 @@ export class FakeAtomicRpcProcess {
 		return this.promptDisposition;
 	}
 
+	/** Runs inside `abort()`, before it answers, as Atomic emits a run's last events before answering. */
+	onAbort: (() => void) | null = null;
+
 	async abort(): Promise<void> {
 		this.abortCount += 1;
+		this.calls.push("abort");
+		this.onAbort?.();
+	}
+
+	clearQueueCount = 0;
+
+	async clearQueue(): Promise<void> {
+		this.clearQueueCount += 1;
+		this.calls.push("clear_queue");
 	}
 
 	async writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {
