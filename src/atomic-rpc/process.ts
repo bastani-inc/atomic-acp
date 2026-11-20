@@ -50,6 +50,7 @@ export function splitLfJsonlChunk(buffer: string, chunk: string): { lines: strin
 type AtomicRpcCommand =
 	| { type: "prompt"; id?: string; message: string; images?: unknown[]; streamingBehavior?: "followUp" }
 	| { type: "abort"; id?: string }
+	| { type: "clear_queue"; id?: string }
 	| { type: "set_extension_ui_capabilities"; id?: string; questionnaire?: boolean }
 	| { type: "get_state"; id?: string }
 	// Model
@@ -389,6 +390,12 @@ export class AtomicRpcProcess {
 	async abort(): Promise<void> {
 		const res = await this.request({ type: "abort" });
 		if (!res.success) throw new Error(`Atomic abort failed: ${res.error ?? JSON.stringify(res.data)}`);
+	}
+
+	/** Take back the steering and follow-up messages Atomic has queued, so no later run reads them. */
+	async clearQueue(): Promise<void> {
+		const res = await this.request({ type: "clear_queue" });
+		if (!res.success) throw new Error(`Atomic clear_queue failed: ${res.error ?? JSON.stringify(res.data)}`);
 	}
 
 	writeExtensionUiResponse(response: AtomicExtensionUiResponse): Promise<void> {

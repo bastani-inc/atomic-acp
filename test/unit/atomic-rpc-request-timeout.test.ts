@@ -84,6 +84,23 @@ for (const data of [{}, { levels: [] }, { levels: [""] }, { levels: [1] }, { lev
 	});
 }
 
+test("AtomicRpcProcess: clear_queue takes back queued messages and reports a refusal", async () => {
+	const { proc, stdout, written } = fixture();
+	const cleared = proc.clearQueue();
+	const request = JSON.parse(written.at(-1)!);
+	assert.deepEqual(request, { type: "clear_queue", id: request.id });
+	stdout.write(
+		`${JSON.stringify({ type: "response", command: request.type, success: true, id: request.id, data: { steering: [], followUp: ["two"] } })}\n`,
+	);
+	await cleared;
+	const refused = proc.clearQueue();
+	const second = JSON.parse(written.at(-1)!);
+	stdout.write(
+		`${JSON.stringify({ type: "response", command: second.type, success: false, id: second.id, error: "nope" })}\n`,
+	);
+	await assert.rejects(refused, /Atomic clear_queue failed: nope/);
+});
+
 test("AtomicRpcProcess: follow-up prompts preserve extension handling and queue safely during streaming", async () => {
 	const { proc, stdout, written } = fixture();
 	for (const disposition of ["handled", "queued", "started"] as const) {
