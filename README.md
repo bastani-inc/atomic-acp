@@ -112,10 +112,17 @@ Set these in the `env` of your agent server entry:
 | `ATOMIC_ACP_ATOMIC_ARGS`             | unset    | JSON array of extra arguments for every Atomic process          |
 | `ATOMIC_ACP_HEADLESS`                | unset    | `1` when no person can answer questions (see below)             |
 | `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset    | `true` lets the editor attach file contents directly to prompts |
+| `ATOMIC_ACP_DIR`                     | unset    | Directory for the adapter's own state (see below)               |
 
 Arguments after `--` also go to every Atomic process, for example `"args": ["--", "--model", "openai/gpt-6.1-sol"]`. Flags the adapter manages itself, such as `--mode` and the session flags, are refused at startup.
 
 Everything else, including logins, models, skills, extensions and the session store, comes from your normal Atomic settings.
+
+### The adapter's own state
+
+The adapter keeps one file of its own, `session-map.json`, which records the project each session belongs to so it can be listed and loaded again. It lives in `~/.atomic/atomic-acp`, or in `ATOMIC_ACP_DIR` when that is set. The directory is made on first use, readable only by you.
+
+Set `ATOMIC_ACP_DIR` when Atomic runs on a private agent directory (`ATOMIC_CODING_AGENT_DIR`) in a sandbox where your `~/.atomic` is read-only; otherwise starting a session fails because the map can't be written. A reload finds a session only through the same `ATOMIC_ACP_DIR` it was saved under.
 
 ### Headless clients
 
