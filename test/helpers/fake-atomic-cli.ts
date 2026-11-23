@@ -1,13 +1,36 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Atomic's own config value resolver, from the installed peer dependency.
-const atomicResolver = pathToFileURL(
-	join(dirname(createRequire(import.meta.url).resolve("@bastani/atomic")), "core", "resolve-config-value.js"),
-).href;
+// Atomic <=0.10.1 shipped dist/core/resolve-config-value.js directly; bundled releases place it
+// in a hashed dist/_shared/ chunk exporting resolveConfigValueOrThrowAsync.
+function findAtomicResolver(): { url: string; exportName: string } {
+	const atomicDist = dirname(createRequire(import.meta.url).resolve("@bastani/atomic"));
+	const unbundled = join(atomicDist, "core", "resolve-config-value.js");
+	if (existsSync(unbundled)) {
+		return { url: pathToFileURL(unbundled).href, exportName: "resolveConfigValueOrThrow" };
+	}
+	const sharedDir = join(atomicDist, "_shared");
+	if (existsSync(sharedDir)) {
+		for (const file of readdirSync(sharedDir)) {
+			if (!file.endsWith(".js")) continue;
+			const fullPath = join(sharedDir, file);
+			const source = readFileSync(fullPath, "utf8");
+			if (/export\s*\{[^}]*\bresolveConfigValueOrThrow\b/.test(source)) {
+				return { url: pathToFileURL(fullPath).href, exportName: "resolveConfigValueOrThrow" };
+			}
+			if (/export\s*\{[^}]*\bresolveConfigValueOrThrowAsync\b/.test(source)) {
+				return { url: pathToFileURL(fullPath).href, exportName: "resolveConfigValueOrThrowAsync" };
+			}
+		}
+	}
+	throw new Error(`Could not locate Atomic's resolveConfigValueOrThrow(Async) export under ${atomicDist}`);
+}
+
+const atomicResolver = findAtomicResolver();
 
 export type FakeAtomicReport = {
 	pid: number;
@@ -36,7 +59,7 @@ export function writeFakeAtomicCli(root: string, opts: { promptEvents?: object[]
 		join(root, "fake-atomic.mjs"),
 		[
 			"import { readFileSync, statSync, writeFileSync } from 'node:fs'",
-			`import { resolveConfigValueOrThrow } from ${JSON.stringify(atomicResolver)}`,
+			`import { ${atomicResolver.exportName} as resolveConfigValue } from ${JSON.stringify(atomicResolver.url)}`,
 			"import { dirname } from 'node:path'",
 			"import { createInterface } from 'node:readline'",
 			"import { pathToFileURL } from 'node:url'",
@@ -60,8 +83,8 @@ export function writeFakeAtomicCli(root: string, opts: { promptEvents?: object[]
 			"  toolCallResults[toolName] = []",
 			'  for (const handler of handlers) toolCallResults[toolName].push((await handler({ toolName, toolCallId: "probe", input: {} }, {})) ?? null)',
 			"}",
-			"const resolveAll = values => values && Object.fromEntries(Object.entries(values).map(([k, v]) => [k, resolveConfigValueOrThrow(v, k)]))",
-			"const resolved = Object.fromEntries(Object.entries(registered).map(([name, c]) => [name, { env: resolveAll(c.env), headers: resolveAll(c.headers) }]))",
+			"const resolveAll = async values => values && Object.fromEntries(await Promise.all(Object.entries(values).map(async ([k, v]) => [k, await resolveConfigValue(v, k)])))",
+			"const resolved = Object.fromEntries(await Promise.all(Object.entries(registered).map(async ([name, c]) => [name, { env: await resolveAll(c.env), headers: await resolveAll(c.headers) }])))",
 			"const disableCompileCache = process.env.NODE_DISABLE_COMPILE_CACHE ?? null",
 			`writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, args, modes, registered, resolved, sources, disableCompileCache, toolCallResults }))`,
 			'createInterface({ input: process.stdin }).on("line", line => {',
