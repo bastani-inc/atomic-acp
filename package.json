@@ -63,5 +63,10 @@
   },
   "peerDependencies": {
     "@bastani/atomic": ">=0.10.0"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    }
   }
 }
