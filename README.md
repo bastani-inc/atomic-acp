@@ -1,13 +1,13 @@
 <h1 align="center">atomic-acp</h1>
 
 <p align="center">
-  <b>Use the <a href="https://github.com/bastani-inc/atomic">Atomic</a> coding agent inside Zed and other editors that speak the Agent Client Protocol.</b>
+  <b>Use the <a href="https://github.com/bastani-inc/atomic">Atomic</a> coding agent in Zed and other editors that speak the Agent Client Protocol.</b>
 </p>
 
 <p align="center">
-  <a href="#get-started"><b>Get started →</b></a>
+  <a href="#install"><b>Install →</b></a>
   &nbsp;·&nbsp;
-  <a href="#what-works">What works</a>
+  <a href="#what-you-get">What you get</a>
   &nbsp;·&nbsp;
   <a href="#subagents-and-background-work">Subagents</a>
   &nbsp;·&nbsp;
@@ -26,35 +26,48 @@
 
 ## How it works
 
-Your editor starts `atomic-acp` and talks to it over stdio with [ACP](https://agentclientprotocol.com/). For each chat thread, `atomic-acp` starts an `atomic --mode rpc` process and translates between the two.
+Your editor starts `atomic-acp` and talks to it over stdio using [ACP](https://agentclientprotocol.com/). For each chat thread, `atomic-acp` starts its own `atomic --mode rpc` process and translates messages between the two.
 
 ```text
-Zed (ACP client) ⇄ atomic-acp ⇄ atomic --mode rpc
+Zed (ACP client)  <->  atomic-acp  <->  atomic --mode rpc
 ```
 
-Atomic reads files, edits code and runs commands on your machine, exactly as it does in a terminal. Only open workspaces you trust.
+Atomic reads files, edits code and runs commands on your machine, the same as in a terminal. Only open workspaces you trust.
 
-## Get started
+## Install
 
-You need Node.js 20 or newer and Atomic 0.10.0 or newer, signed in to at least one model provider:
+`atomic-acp` needs Node.js 20 or newer. It does not install Atomic. It runs whichever `atomic` is on your `PATH`, so install Atomic 0.10.0 or newer separately, in either of two ways.
+
+**With the standalone installer.** This needs no Node.js for Atomic itself:
 
 ```bash
-npm install -g @bastani/atomic @bastani/atomic-acp
-atomic   # sign in, then quit
+# macOS and Linux
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
 ```
 
-If you use Atomic's standalone release archive instead of the npm package, install only the adapter:
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+**With npm.** Atomic's npm package needs Node.js 24.20 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh   # Windows: irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+npm install -g @bastani/atomic
+```
+
+Then install the adapter and sign in to Atomic once:
+
+```bash
 npm install -g @bastani/atomic-acp
+atomic   # sign in to a model provider, then quit
 ```
 
-`atomic-acp` uses the `atomic` on your `PATH`, or the one `ATOMIC_ACP_ATOMIC_COMMAND` names, and never installs Atomic itself. Run `atomic-acp --help` for its options.
+To run a different Atomic, set `ATOMIC_ACP_ATOMIC_COMMAND` to its path. Run `atomic-acp --help` to see all options.
 
 ### Add it to Zed
 
-In Zed's `settings.json`:
+Add this to Zed's `settings.json`:
 
 ```json
 {
@@ -69,78 +82,80 @@ In Zed's `settings.json`:
 }
 ```
 
-Open the agent panel, pick **Atomic** and start a thread. If Atomic has no working login, Zed shows an **Authenticate** banner that opens Atomic in a terminal. `atomic-acp --terminal-login` does the same.
+Open the agent panel, pick **Atomic** and start a thread.
 
-Without a global install, use `"command": "npx", "args": ["-y", "@bastani/atomic-acp"]`.
+If Atomic has no working login, Zed shows an **Authenticate** banner. It opens Atomic in a terminal so you can sign in. Running `atomic-acp --terminal-login` does the same.
 
-## What works
+To skip the global install of the adapter, use `"command": "npx"` with `"args": ["-y", "@bastani/atomic-acp"]`.
 
-- Text and reasoning stream into the thread. Tool calls show their status and files, edits show a diff, and shell commands show their output.
-- Threads are Atomic sessions. They appear in the editor's history and in `atomic --resume`, keep their title and survive an adapter restart. Deleting a thread deletes its session.
-- The model and thinking pickers list what your Atomic setup offers, and the context indicator shows how full the context is.
+## What you get
+
+- Replies and reasoning stream into the thread as Atomic writes them.
+- Tool calls show their status and the files they touch. Edits show a diff, and shell commands show their output.
+- Each thread is an Atomic session. It shows up in the editor's history and in `atomic --resume`, keeps its title and survives an adapter restart. Deleting the thread deletes the session.
+- The model and thinking pickers list what your Atomic setup offers. The context indicator shows how full the context window is.
 - Prompt templates, skills (`/skill:name`) and extension commands appear in the slash menu.
-- When Atomic asks you to pick, confirm or type something, the editor shows a form.
-- `ask_user_question` shows all of its questions in one form, multi-select included.
-- MCP servers the editor configures reach the thread's Atomic process, and their tools are callable as `mcp__<server>__<tool>`. Stdio and HTTP servers work, SSE servers are skipped. `atomic-acp` never writes to your Atomic MCP config, and a server you define there under the same name wins.
-- If Atomic exits during a message, the message fails with the reason, and the next message starts Atomic again on the same session.
+- When Atomic asks you to pick, confirm or type something, the editor shows a form. `ask_user_question` puts all of its questions in one form, including multi-select ones.
+- MCP servers configured in the editor are passed to the thread's Atomic process. Their tools are named `mcp__<server>__<tool>`. Stdio and HTTP servers work. SSE servers are skipped. `atomic-acp` never writes to your Atomic MCP config, and a server with the same name in that config takes precedence.
+- If Atomic exits in the middle of a message, the message fails with the reason. Your next message starts Atomic again on the same session.
 
 ## Subagents and background work
 
-Atomic 0.10 has no workflows. The agent splits work across [subagents](https://docs.bastani.ai/orchestration) and background shells instead, and the editor shows them as tool calls.
+Atomic splits larger tasks across [subagents](https://docs.bastani.ai/orchestration) and background shells. The editor shows each one as a tool call.
 
-- A message ends when Atomic finishes its turn, even if subagents or shells it started are still running. Atomic doesn't report background work over RPC, so `atomic-acp` can't wait for it. To keep a message open until a result is in, ask the agent to wait for it.
-- When background work finishes, Atomic reads the result in a new turn. That turn streams into the thread without a message of yours. A message you send while it runs joins that turn and ends when it ends.
-- Cancelling a message stops the current turn and drops the messages queued behind it, as Esc does in Atomic. Subagents and shells keep running; ask the agent to stop them.
-- Opening another thread, deleting a thread, or opening it again with different MCP servers stops its Atomic process. A message still running there ends as cancelled, and its subagents stop with the process.
+- A message ends when Atomic finishes its turn, even if subagents or shells it started are still running. Atomic does not report background work over RPC, so `atomic-acp` cannot wait for it. If you need the result before the message ends, ask the agent to wait for it.
+- When background work finishes, Atomic reads the result in a new turn. That turn streams into the thread on its own. A message you send during it joins that turn.
+- Cancelling a message stops the current turn and drops any queued messages, like pressing Esc in Atomic. Subagents and shells keep running. Ask the agent to stop them.
+- Switching to another thread, deleting a thread, or reopening it with different MCP servers stops its Atomic process. A message still running there ends as cancelled, and its subagents stop with the process.
 
 ## Slash commands
 
-Besides your Atomic prompts, skills and extension commands:
+On top of your Atomic prompts, skills and extension commands, `atomic-acp` adds:
 
-| Command                        | What it does                                     |
-| ------------------------------ | ------------------------------------------------ |
-| `/compact [instructions]`      | Compact the context                              |
-| `/autocompact on\|off\|toggle` | Turn automatic compaction on or off              |
-| `/session`                     | Session ID, tokens, messages and cost            |
-| `/name <name>`                 | Rename the session                               |
-| `/export`                      | Export the session as HTML to the working folder |
-| `/steering`, `/follow-up`      | Show or set how queued messages are delivered    |
-| `/changelog`                   | Show Atomic's changelog                          |
+| Command                        | What it does                                       |
+| ------------------------------ | -------------------------------------------------- |
+| `/compact [instructions]`      | Compact the context                                |
+| `/autocompact on\|off\|toggle` | Turn automatic compaction on or off                |
+| `/session`                     | Show the session ID, tokens, messages and cost     |
+| `/name <name>`                 | Rename the session                                 |
+| `/export`                      | Export the session as HTML into the working folder |
+| `/steering`, `/follow-up`      | Show or set how queued messages are delivered      |
+| `/changelog`                   | Show the changelog of the installed Atomic         |
 
-Use the editor's pickers instead of `/model` and `/thinking`, and a new thread instead of `/clear`.
+For `/model` and `/thinking`, use the editor's pickers. For `/clear`, start a new thread.
 
 ## Configuration
 
-Set these in the `env` of your agent server entry:
+Set these variables in the `env` of the agent server entry:
 
-| Variable                             | Default  | Purpose                                                         |
+| Variable                             | Default  | What it does                                                    |
 | ------------------------------------ | -------- | --------------------------------------------------------------- |
 | `ATOMIC_ACP_ATOMIC_COMMAND`          | `atomic` | Path or name of the Atomic executable                           |
 | `ATOMIC_ACP_ATOMIC_ARGS`             | unset    | JSON array of extra arguments for every Atomic process          |
-| `ATOMIC_ACP_HEADLESS`                | unset    | `1` when no person can answer questions (see below)             |
-| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset    | `true` lets the editor attach file contents directly to prompts |
-| `ATOMIC_ACP_DIR`                     | unset    | Directory for the adapter's own state (see below)               |
+| `ATOMIC_ACP_HEADLESS`                | unset    | Set to `1` when no person is there to answer questions          |
+| `ATOMIC_ACP_ENABLE_EMBEDDED_CONTEXT` | unset    | Set to `true` to let the editor attach file contents to prompts |
+| `ATOMIC_ACP_DIR`                     | unset    | Directory for the adapter's own state, see below                |
 
-Arguments after `--` also go to every Atomic process, for example `"args": ["--", "--model", "openai/gpt-6.1-sol"]`. Flags the adapter manages itself, such as `--mode` and the session flags, are refused at startup.
+You can also pass Atomic arguments after `--`, for example `"args": ["--", "--model", "openai/gpt-6.1-sol"]`. The adapter refuses flags it manages itself, such as `--mode` and the session flags.
 
-Everything else, including logins, models, skills, extensions and the session store, comes from your normal Atomic settings.
+Everything else comes from your normal Atomic settings, including logins, models, skills, extensions and the session store.
 
 ### The adapter's own state
 
-The adapter keeps one file of its own, `session-map.json`, which records the project each session belongs to so it can be listed and loaded again. It lives in `~/.atomic/atomic-acp`, or in `ATOMIC_ACP_DIR` when that is set. The directory is made on first use, readable only by you.
+The adapter keeps a single file, `session-map.json`. It records which project each session belongs to, so threads can be listed and reopened. The file lives in `~/.atomic/atomic-acp`, or in `ATOMIC_ACP_DIR` if you set it. The directory is created on first use and only you can read it.
 
-Set `ATOMIC_ACP_DIR` when Atomic runs on a private agent directory (`ATOMIC_CODING_AGENT_DIR`) in a sandbox where your `~/.atomic` is read-only; otherwise starting a session fails because the map can't be written. A reload finds a session only through the same `ATOMIC_ACP_DIR` it was saved under.
+Set `ATOMIC_ACP_DIR` if Atomic runs in a sandbox with its own agent directory (`ATOMIC_CODING_AGENT_DIR`) and your `~/.atomic` is read-only. Without it, starting a session fails because the map cannot be written. Keep the same `ATOMIC_ACP_DIR` afterwards, because a session can only be reopened from the directory it was saved in.
 
 ### Headless clients
 
-With `ATOMIC_ACP_HEADLESS=1`, questions end at once instead of waiting. `ask_user_question` tells the model that no person is available, and extension dialogs are cancelled.
+With `ATOMIC_ACP_HEADLESS=1`, questions return immediately instead of waiting for an answer. `ask_user_question` tells the model that nobody is available, and extension dialogs are cancelled.
 
 ## Limitations
 
-- `ask_user_question` needs an editor that supports ACP forms (elicitation). Without them, the question can't be answered.
-- Atomic reads, writes and runs commands itself. The editor's file and terminal APIs aren't used.
-- Messages sent while Atomic is busy are queued and sent one at a time.
-- Zed is the tested client. Other ACP clients should work but may render some updates differently.
+- `ask_user_question` needs an editor that supports ACP forms (elicitation). Other editors cannot answer it.
+- Atomic reads files, writes files and runs commands itself. The editor's file and terminal APIs are not used.
+- Messages sent while Atomic is busy wait in a queue and go out one at a time.
+- Zed is the only tested client. Other ACP clients should work, but they may display some updates differently.
 
 ## Development
 
@@ -152,13 +167,19 @@ npm run lint
 npm run build
 ```
 
-`src/acp/` holds the ACP side and `src/atomic-rpc/` the Atomic process wrapper. The `npm run smoke:*` scripts drive a real, signed-in Atomic and spend model tokens, so they aren't part of `npm test`.
+`src/acp/` holds the ACP side and `src/atomic-rpc/` wraps the Atomic process. The `npm run smoke:*` scripts drive a real, signed-in Atomic and spend model tokens, so `npm test` does not run them.
 
 ## Releasing
 
-Merge a pull request whose commit is titled `Release X.Y.Z` (or `Release X.Y.Z-alpha.N`) and sets that version in `package.json`. Any merge style works: a squash merge's ` (#N)` suffix is accepted. The [tag-release workflow](.github/workflows/tag-release.yml) then tags that commit and starts the [publish workflow](.github/workflows/publish.yml), which checks the tag, runs the tests and publishes to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers). Stable versions go to `latest` and alphas to `next`.
+1. Open a pull request that sets the new version in `package.json` and whose last commit is titled `Release X.Y.Z`, or `Release X.Y.Z-alpha.N` for an alpha.
+2. Merge it with a squash or rebase merge. A regular merge commit is titled `Merge pull request ...` and does not start a release. For a squash merge, title the commit `Release X.Y.Z`. The ` (#N)` suffix GitHub adds is fine.
+3. The [tag-release workflow](.github/workflows/tag-release.yml) tags the commit and starts the [publish workflow](.github/workflows/publish.yml). It checks the tag, runs the tests and publishes to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers). Stable versions go to the `latest` tag and alphas to `next`.
 
-To publish a tag that already exists, for example after a failed run, start the publish workflow from `main` with that tag: `gh workflow run publish.yml --ref main -f tag=X.Y.Z`.
+If a publish run fails after the tag exists, start it again from `main`:
+
+```bash
+gh workflow run publish.yml --ref main -f tag=X.Y.Z
+```
 
 ## Credits
 
