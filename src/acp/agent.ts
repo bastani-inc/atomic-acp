@@ -29,6 +29,7 @@ import {
 	type SetSessionModeResponse,
 } from "@agentclientprotocol/sdk";
 import { getAtomicCommand, shouldUseShellForAtomicCommand } from "../atomic-rpc/command.js";
+import { atomicChangelogCandidates, atomicInstallKind, atomicUpdateCommand } from "../atomic-rpc/install.js";
 import { AtomicRpcProcess, AtomicRpcSpawnError } from "../atomic-rpc/process.js";
 import { toAvailableCommandsFromAtomicGetCommands } from "./atomic-commands.js";
 import { type AtomicSessionListItem, parseAtomicSessionList } from "./atomic-sessions.js";
@@ -722,17 +723,11 @@ export class AtomicAcpAgent {
 			if (cmd === "changelog") {
 				// Read Atomic's installed CHANGELOG.md. Adapter-side, no model call.
 				const findChangelog = (): string | null => {
-					// 1) Locate the installed Atomic package by resolving the configured executable.
-					// On Node installs, `atomic` typically resolves to .../@bastani/atomic/dist/cli.js
+					// 1) Locate the installed Atomic by resolving the configured executable.
 					try {
-						const atomicPath = resolveAtomicExecutablePath();
-
-						if (atomicPath) {
-							const resolved = realpathSync(atomicPath);
-							const pkgRoot = dirname(dirname(resolved));
-							const p = join(pkgRoot, "CHANGELOG.md");
-							if (existsSync(p)) return p;
-						}
+						const resolved = resolveAtomicRealPath();
+						const found = resolved && atomicChangelogCandidates(resolved).find((p) => existsSync(p));
+						if (found) return found;
 					} catch {
 						// ignore
 					}
@@ -1433,6 +1428,11 @@ function resolveAtomicExecutablePath(): string | null {
 	);
 }
 
+function resolveAtomicRealPath(): string | null {
+	const atomicPath = resolveAtomicExecutablePath();
+	return atomicPath ? realpathSync(atomicPath) : null;
+}
+
 function getAtomicVersionOutput(): string {
 	const cmd = getAtomicCommand(process.env.ATOMIC_ACP_ATOMIC_COMMAND);
 	const atomicVersion = spawnSync(cmd, ["--version"], {
@@ -1461,7 +1461,9 @@ function buildUpdateNotice(): string | null {
 		if (!latest || !isSemver(latest)) return null;
 		if (compareSemver(latest, installed) <= 0) return null;
 
-		return `New version available: v${latest} (installed v${installed}). Run: \`npm i -g @bastani/atomic\``;
+		const resolved = resolveAtomicRealPath();
+		const kind = resolved ? atomicInstallKind(resolved) : "npm";
+		return `New version available: v${latest} (installed v${installed}). Run: \`${atomicUpdateCommand(kind, process.platform)}\``;
 	} catch {
 		return null;
 	}

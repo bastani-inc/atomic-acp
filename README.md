@@ -43,7 +43,14 @@ npm install -g @bastani/atomic @bastani/atomic-acp
 atomic   # sign in, then quit
 ```
 
-`atomic-acp` uses the `atomic` on your `PATH`. Run `atomic-acp --help` for its options.
+If you use Atomic's standalone release archive instead of the npm package, install only the adapter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh   # Windows: irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+npm install -g @bastani/atomic-acp
+```
+
+`atomic-acp` uses the `atomic` on your `PATH`, or the one `ATOMIC_ACP_ATOMIC_COMMAND` names, and never installs Atomic itself. Run `atomic-acp --help` for its options.
 
 ### Add it to Zed
 

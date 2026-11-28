@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { type AdapterExtensionFile, type AdapterMcpServer, writeAdapterExtension } from "./adapter-extension.js";
 import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand, withExcludedTool } from "./command.js";
+import { ATOMIC_INSTALL_HINT } from "./install.js";
 
 export class AtomicRpcSpawnError extends Error {
 	/** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -275,7 +276,7 @@ export class AtomicRpcProcess {
 			const code = typeof e?.code === "string" ? e.code : undefined;
 			if (code === "ENOENT") {
 				throw new AtomicRpcSpawnError(
-					`Could not start Atomic: executable not found (command: ${cmd}). Atomic needs to be installed before it can run in ACP clients. Install it via \`npm install -g @bastani/atomic\` or ensure \`atomic\` is on your PATH. Then try again.`,
+					`Could not start Atomic: executable not found (command: ${cmd}). Atomic needs to be installed before it can run in ACP clients. ${ATOMIC_INSTALL_HINT}. Then try again.`,
 					{ code, cause: e },
 				);
 			}

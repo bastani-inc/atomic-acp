@@ -1,6 +1,7 @@
 import { ndJsonStream } from "@agentclientprotocol/sdk";
 import { type AtomicAcpAgent, atomicAcpApp, readNearestPackageJson } from "./acp/agent.js";
 import { getAtomicCommand, parseAtomicExtraArgs, shouldUseShellForAtomicCommand } from "./atomic-rpc/command.js";
+import { ATOMIC_INSTALL_HINT } from "./atomic-rpc/install.js";
 import { parseCliArgs, USAGE } from "./cli.js";
 
 // Pipe writes can be asynchronous, so let the output flush before exiting.
@@ -30,9 +31,7 @@ if ("command" in cli && cli.command === "terminal-login") {
 	});
 
 	if ((res as any).error && (res as any).error.code === "ENOENT") {
-		process.stderr.write(
-			`atomic-acp: could not start Atomic (command not found: ${cmd}). Install it via \`npm install -g @bastani/atomic\` or ensure \`atomic\` is on your PATH.\n`,
-		);
+		process.stderr.write(`atomic-acp: could not start Atomic (command not found: ${cmd}). ${ATOMIC_INSTALL_HINT}.\n`);
 		process.exit(1);
 	}
 
